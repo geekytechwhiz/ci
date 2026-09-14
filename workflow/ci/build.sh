@@ -33,10 +33,21 @@ fi
 assert_stage
 assert_codebuild_stage_match
 
+# common.sh falls back to CODEBUILD_SRC_DIR (repo root) when SERVICE_DIR is unset.
+# This service lives in workflow/; data/, infrastructure/, and serverless.yml are
+# there — not at the repository root. Resolve from this script (workflow/ci).
+SERVICE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SERVICE_ROOT="$SERVICE_DIR"
+export SERVICE_DIR SERVICE_ROOT
+
 cd "$SERVICE_DIR"
 
 echo "Current Directory:"
 pwd
+if [ ! -d data ] || [ ! -d infrastructure ] || [ ! -f serverless.yml ]; then
+  echo "ERROR: SERVICE_DIR=$SERVICE_DIR is not the workflow service root (need data/, infrastructure/, serverless.yml)" >&2
+  exit 1
+fi
 echo "STAGE=$STAGE ARTIFACT_BUCKET=$ARTIFACT_BUCKET AWS_REGION=$AWS_REGION STACK_NAME=${STACK_NAME:-$APP_STACK_NAME} DATA_STACK_NAME=$DATA_STACK_NAME INFRA_STACK_NAME=$INFRA_STACK_NAME"
 
 echo "Cleaning old artifacts..."
