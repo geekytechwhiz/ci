@@ -93,11 +93,6 @@ Parameters:
     Type: String
     Description: Existing CodePipeline artifact store bucket (internal pipeline artifacts). Not the deployment artifact bucket.
 
-  ArtifactKmsKeyArn:
-    Type: String
-    Default: ''
-    Description: Optional KMS key ARN if the CodePipeline artifact store uses SSE-KMS. Leave empty for AES256/S3-managed.
-
   ArtifactBucket:
     Type: String
     Description: Centralized environment deployment artifact bucket (commit-scoped packages + cicd framework bundle). Required — no default.
@@ -178,7 +173,6 @@ Parameters:
 
 Conditions:
   HasApiBaseUrlParameter: !Not [!Equals [!Ref ApiBaseUrlParameter, '']]
-  HasArtifactKmsKey: !Not [!Equals [!Ref ArtifactKmsKeyArn, '']]
   HasDataTableName: !Not [!Equals [!Ref DataTableName, '']]
   HasOwnershipTagService: !Not [!Equals [!Ref OwnershipTagService, '']]
   HasExternalBuildProject: !Not [!Equals [!Ref BuildProjectName, '']]
@@ -295,34 +289,6 @@ Resources:
                 Condition:
                   StringEquals:
                     codeconnections:FullRepositoryId: !Ref GitHubFullRepositoryId
-
-  ArtifactKmsForPipeline:
-    Type: AWS::IAM::Policy
-    Condition: HasArtifactKmsKey
-    Properties:
-      PolicyName: pipeline-artifact-kms
-      Roles:
-        - !Ref PipelineRole
-        - !If [CreateBuildProject, !Ref BuildRole, !Ref AWS::NoValue]
-        - !Ref DeployDataRole
-        - !Ref DeployInfraRole
-        - !Ref DeployAppRole
-        - !Ref ValidateSsmRole
-        - !Ref SmokeTestRole
-        - !Ref RecordDeploymentRole
-        - !Ref CloudFormationDeployRole
-        - !Ref CloudFormationRecoverDataRole
-        - !Ref RecoverDataRole
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Action:
-              - kms:Decrypt
-              - kms:DescribeKey
-              - kms:Encrypt
-              - kms:GenerateDataKey
-            Resource: !Ref ArtifactKmsKeyArn
 
   BuildRole:
     Type: AWS::IAM::Role
@@ -1005,8 +971,11 @@ Resources:
             Action: sts:AssumeRole
           - Effect: Allow
             Principal:
-              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${Stage}-${ServiceName}-deploy-data-role'
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
             Action: sts:AssumeRole
+            Condition:
+              StringLike:
+                aws:PrincipalArn: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${Stage}-${ServiceName}-deploy-data-role'
       Tags:
         - Key: Service
           Value: !Ref ServiceName
@@ -1357,20 +1326,20 @@ Resources:
                 - |
                   set -euo pipefail
                   if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
                   else
                     mkdir -p /tmp/cicd-framework
                     aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
                     tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
                     export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
                   fi
-                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
-                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-build.sh"
+                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-build.sh"
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_MEDIUM
@@ -1467,20 +1436,20 @@ Resources:
                 - |
                   set -euo pipefail
                   if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
                   else
                     mkdir -p /tmp/cicd-framework
                     aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
                     tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
                     export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
                   fi
-                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
-                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-deploy-data.sh"
+                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-deploy-data.sh"
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -1599,20 +1568,20 @@ Resources:
                 - |
                   set -euo pipefail
                   if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
                   else
                     mkdir -p /tmp/cicd-framework
                     aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
                     tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
                     export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
                   fi
-                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
-                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-recover-data.sh"
+                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-recover-data.sh"
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -1718,20 +1687,20 @@ Resources:
                 - |
                   set -euo pipefail
                   if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
                   else
                     mkdir -p /tmp/cicd-framework
                     aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
                     tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
                     export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
                   fi
-                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
-                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-deploy-infra.sh"
+                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-deploy-infra.sh"
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -1825,20 +1794,20 @@ Resources:
                 - |
                   set -euo pipefail
                   if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
                   else
                     mkdir -p /tmp/cicd-framework
                     aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
                     tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
                     export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
                   fi
-                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
-                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-deploy-app.sh"
+                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-deploy-app.sh"
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -1932,20 +1901,20 @@ Resources:
                 - |
                   set -euo pipefail
                   if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
                   else
                     mkdir -p /tmp/cicd-framework
                     aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
                     tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
                     export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
                   fi
-                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
-                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-validate-ssm.sh"
+                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-validate-ssm.sh"
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -2042,20 +2011,20 @@ Resources:
                 - |
                   set -euo pipefail
                   if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
                   else
                     mkdir -p /tmp/cicd-framework
                     aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
                     tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
                     export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
                   fi
-                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
-                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-smoke-test.sh"
+                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-smoke-test.sh"
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -2161,20 +2130,20 @@ Resources:
                 - |
                   set -euo pipefail
                   if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
                   else
                     mkdir -p /tmp/cicd-framework
                     aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
                     tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
                     export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
                   fi
-                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
-                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-record-deployment.sh"
+                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-record-deployment.sh"
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -2254,15 +2223,9 @@ Resources:
         - Name: ArtifactBucket
           DefaultValue: !Ref ArtifactBucket
           Description: Centralized environment artifact bucket. CodeBuild receives ARTIFACT_BUCKET=#{variables.ArtifactBucket}.
-      ArtifactStore: !If
-        - HasArtifactKmsKey
-        - Type: S3
-          Location: !Ref ArtifactBucketName
-          EncryptionKey:
-            Id: !Ref ArtifactKmsKeyArn
-            Type: KMS
-        - Type: S3
-          Location: !Ref ArtifactBucketName
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucketName
       Tags:
         - Key: Service
           Value: !Ref ServiceName

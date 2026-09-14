@@ -2,17 +2,18 @@
 # Replace REPLACE_ME_* values before deploying any pipeline.
 environment:
   name: dev
-  awsRegion: ap-south-1
+  awsRegion: us-east-1
 
 github:
   # Official organization CodeConnections ARN (must be AVAILABLE, not PENDING).
-  connectionArn: REPLACE_ME_CODECONNECTIONS_ARN
+  connectionArn: arn:aws:codeconnections:us-east-1:462778607085:connection/271c183a-9f2b-4625-af12-86cebfe37a16
+
 
 artifacts:
   # CodePipeline internal artifact store (Source/Build zips). Not the deployment bucket.
-  pipelineBucket: REPLACE_ME_CODEPIPELINE_ARTIFACT_BUCKET
+  pipelineBucket: dev-poc-pipeline-artifacts
   # Centralized immutable deployment artifacts: <service>/<commit-sha>/...
-  deploymentBucket: REPLACE_ME_DEPLOYMENT_ARTIFACT_BUCKET
+  deploymentBucket: dev-poc-artifacts
   # Optional SSE-KMS for the CodePipeline artifact store. Empty = S3-managed AES256.
   kmsKeyArn: ""
 

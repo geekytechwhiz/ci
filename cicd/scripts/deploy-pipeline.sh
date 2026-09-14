@@ -58,7 +58,14 @@ function parseYamlSimple(filePath) {
   const getVal = (pattern) => {
     for (const l of lines) {
       if (l.trim().startsWith(pattern)) {
-        return l.split(":")[1].trim();
+        const idx = l.indexOf(":");
+        if (idx !== -1) {
+          let val = l.substring(idx + 1).trim();
+          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+          }
+          return val;
+        }
       }
     }
     return "";
@@ -69,10 +76,12 @@ function parseYamlSimple(filePath) {
 const env = parseYamlSimple(process.argv[1]);
 const svc = parseYamlSimple(process.argv[2]);
 
-const connArn = env.getVal("connectionArn:") || "arn:aws:codeconnections:ap-south-1:123456789012:connection/example";
+const connArn = svc.getVal("connectionArn:") || env.getVal("connectionArn:") || "arn:aws:codeconnections:ap-south-1:123456789012:connection/example";
 const pipeBucket = env.getVal("pipelineBucket:") || "dev-pipeline-artifacts";
 const deployBucket = env.getVal("deploymentBucket:") || "dev-deployment-artifacts";
-const repo = svc.getVal("repository:") || "MyvitalRx/api-hub";
+const kmsKeyArn = env.getVal("kmsKeyArn:");
+ 
+const repo = svc.getVal("repository:") || "geekytechwhiz/ci";
 const branch = svc.getVal("branch:") || "main";
 const ciPath = svc.getVal("ciPath:") || "workflow/ci";
 const tableName = svc.getVal("tableName:") || process.argv[3] + "-" + process.argv[4];
@@ -88,6 +97,9 @@ console.log(`ArtifactBucket=${deployBucket}`);
 console.log(`GitHubConnectionArn=${connArn}`);
 console.log(`GitHubFullRepositoryId=${repo}`);
 console.log(`GitHubBranch=${branch}`);
+if (kmsKeyArn) {
+  console.log(`ArtifactKmsKeyArn=${kmsKeyArn}`);
+}
 ' "$ENV_CONFIG" "$SVC_CONFIG" "$SERVICE" "$STAGE")
 
 echo "Derived Parameters:"
@@ -98,16 +110,30 @@ if command -v aws >/dev/null 2>&1; then
     echo "Executing aws cloudformation deploy..."
     # Convert PARAMS lines to array for aws cloudformation deploy
     PARAM_ARGS=()
+    S3_BUCKET=""
     while read -r line; do
-      [ -n "$line" ] && PARAM_ARGS+=("$line")
+      if [ -n "$line" ]; then
+        PARAM_ARGS+=("$line")
+        if [[ "$line" == ArtifactBucketName=* ]]; then
+          S3_BUCKET="${line#ArtifactBucketName=}"
+        fi
+      fi
     done <<< "$PARAMS"
 
-  aws cloudformation deploy \
-    --template-file "$TEMPLATE_PATH" \
-    --stack-name "$STACK_NAME" \
-    --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-    --parameter-overrides "${PARAM_ARGS[@]}" \
-    --s3-bucket "$ARTIFACT_BUCKET"
+    S3_BUCKET="${ARTIFACT_BUCKET:-$S3_BUCKET}"
+
+    AWS_DEPLOY_CMD=(
+      aws cloudformation deploy
+      --template-file "$TEMPLATE_PATH"
+      --stack-name "$STACK_NAME"
+      --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+      --parameter-overrides "${PARAM_ARGS[@]}"
+    )
+    if [ -n "$S3_BUCKET" ]; then
+      AWS_DEPLOY_CMD+=(--s3-bucket "$S3_BUCKET")
+    fi
+
+    "${AWS_DEPLOY_CMD[@]}"
 
     echo "Pipeline stack deployment COMPLETED."
   else
