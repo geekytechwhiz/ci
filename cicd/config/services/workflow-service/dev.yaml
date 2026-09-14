@@ -4,7 +4,7 @@ service:
 
 source:
   repository: MyvitalRx/api-hub
-  branch: main
+  branch: dev
   ciPath: workflow/ci
 
 deployment:
@@ -29,7 +29,7 @@ features:
   apiGateway: true
 
 ssm:
-  prefix: /dev/workflow-service
+  prefix: /nvdev-use1-mvx/workflow-service
   required:
     - TABLE_NAME
     - TABLE_ARN
@@ -39,7 +39,7 @@ ssm:
 
 application:
   healthCheckPath: /health
-  apiBaseUrlParameter: /dev/workflow-service/api-base-url
+  apiBaseUrlParameter: /nvdev-use1-mvx/workflow-service/api-base-url
   healthResponseContains: '"status": "healthy"'
   smokeTest: required
   buildProjectName: ""
