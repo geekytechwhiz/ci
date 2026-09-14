@@ -101,10 +101,39 @@ if command -v free >/dev/null 2>&1; then
   free -h || true
 fi
 
+# Serverless Framework 3.x (frameworkVersion: '3.x' in serverless.yml,
+# serverless.data.yml, serverless.infra.yml; package.json pin: ^3.40.0).
+# Bare `npx serverless` from data/ or infrastructure/ has no package.json, so
+# npx downloads latest 4.x and then fails with "No version found for 3.x".
+SERVERLESS_VERSION="${SERVERLESS_VERSION:-3.40.0}"
+SERVERLESS_BIN="$SERVICE_DIR/node_modules/.bin/serverless"
+
+run_serverless() {
+  if [ -x "$SERVERLESS_BIN" ]; then
+    "$SERVERLESS_BIN" "$@"
+  else
+    npx --yes --package "serverless@${SERVERLESS_VERSION}" serverless "$@"
+  fi
+}
+
+echo "Resolving Serverless Framework CLI (required 3.x, pin ${SERVERLESS_VERSION})..."
+if [ -x "$SERVERLESS_BIN" ]; then
+  echo "Using local CLI: $SERVERLESS_BIN"
+else
+  echo "Local CLI not found; using npx --package serverless@${SERVERLESS_VERSION} (not unpinned npx serverless)"
+fi
+SLS_VERSION_OUT="$(run_serverless --version)"
+echo "$SLS_VERSION_OUT"
+if ! echo "$SLS_VERSION_OUT" | grep -qE 'Framework Core: 3\.'; then
+  echo "ERROR: Workflow packaging requires Serverless Framework 3.x (got incompatible CLI)." >&2
+  echo "ERROR: Unpinned npx serverless resolves to 4.x, which cannot satisfy frameworkVersion: '3.x'." >&2
+  exit 1
+fi
+
 echo "Packaging data stack ($DATA_STACK_NAME)..."
 (
   cd data
-  npx serverless package \
+  run_serverless package \
     --config serverless.data.yml \
     --stage "$STAGE" \
     --package .serverless
@@ -114,7 +143,7 @@ copy_packaged_template data/.serverless data/packaged.yaml
 echo "Packaging infrastructure stack ($INFRA_STACK_NAME)..."
 (
   cd infrastructure
-  npx serverless package \
+  run_serverless package \
     --config serverless.infra.yml \
     --stage "$STAGE" \
     --package .serverless
@@ -122,7 +151,7 @@ echo "Packaging infrastructure stack ($INFRA_STACK_NAME)..."
 copy_packaged_template infrastructure/.serverless infrastructure/packaged.yaml
 
 echo "Packaging application stack ($APP_STACK_NAME) (NODE_OPTIONS=$NODE_OPTIONS)..."
-npx serverless package \
+run_serverless package \
   --stage "$STAGE" \
   --package .serverless
 
