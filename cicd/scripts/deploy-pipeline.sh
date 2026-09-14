@@ -102,11 +102,13 @@ if command -v aws >/dev/null 2>&1; then
       [ -n "$line" ] && PARAM_ARGS+=("$line")
     done <<< "$PARAMS"
 
-    aws cloudformation deploy \
-      --template-file "$TEMPLATE_PATH" \
-      --stack-name "$STACK_NAME" \
-      --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-      --parameter-overrides "${PARAM_ARGS[@]}"
+  aws cloudformation deploy \
+    --template-file "$TEMPLATE_PATH" \
+    --stack-name "$STACK_NAME" \
+    --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+    --parameter-overrides "${PARAM_ARGS[@]}" \
+    --s3-bucket "$ARTIFACT_BUCKET"
+
     echo "Pipeline stack deployment COMPLETED."
   else
     echo "AWS CLI credentials unconfigured — skipped live AWS deployment call."

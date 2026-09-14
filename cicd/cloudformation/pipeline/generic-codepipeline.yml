@@ -1058,7 +1058,7 @@ Resources:
                   ForAllValues:StringEqualsIgnoreCase:
                     cloudformation:ImportResourceTypes:
                       - AWS::DynamoDB::Table
-                  Null:
+                  'Null':
                     cloudformation:ImportResourceTypes: 'false'
               - Sid: UpdateDataStackAfterImport
                 Effect: Allow
