@@ -1,0 +1,22 @@
+version: 0.2
+# Reference buildspec: Validate-SSM
+
+env:
+  shell: bash
+
+phases:
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+        source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+        echo "STAGE=${STAGE:?} SERVICE_NAME=${SERVICE_NAME:?}"
+
+  build:
+    commands:
+      - "${CICD_SCRIPTS_DIR}/run-validate-ssm.sh"
+
+  post_build:
+    commands:
+      - echo "SSM validation finished"

@@ -1,0 +1,5 @@
+# Application-only Serverless custom values (not infrastructure).
+corsOrigin:
+  dev: '*'
+  stg: '*'
+  prd: '*'

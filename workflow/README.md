@@ -1,0 +1,164 @@
+# Workflow Service
+
+Nx application runtime (templates, instances, EventBridge ingest, outbox relay).
+
+```text
+Data Stack ({stage}-workflow-service-data)
+        ↓
+DynamoDB + SSM  /{stage}/workflow-service/TABLE_*  STREAM_ARN
+        ↓
+Infrastructure Stack ({stage}-workflow-service-infra)
+        ↓
+SQS + SSM  /{stage}/workflow-service/SQS_QUEUE_*
+        ↓
+Application Stack ({stage}-workflow-service)
+        ↓
+API Gateway → one API Lambda
+SQS → SQS Lambda
+DynamoDB Stream → Stream Lambda
+```
+
+```text
+ONE CODEPIPELINE  (workflow-service-pipeline)
+    ↓
+Build
+    ↓
+Deploy-Data
+    ↓
+Deploy-Infra
+    ↓
+Validate-SSM
+    ↓
+Deploy-App
+    ↓
+Smoke-Test
+    ↓
+Record-Deployment
+```
+
+This split is   one pipeline, three CloudFormation stacks, SSM as the only cross-stack contract. Full write-up: [docs/infrastructure-poc-step-1.md](../../docs/infrastructure-poc-step-1.md). CI/CD details: [docs/services/workflow-service/CICD.md](../../docs/services/workflow-service/CICD.md).
+
+## Repository layout
+
+```text
+workflow-service/
+│
+├── src/                    # Application (handlers, services, consumers)
+│
+├── data/                   # Data CloudFormation stack
+│   ├── serverless.data.yml
+│   └── resources/data.yml  # DynamoDB + data SSM
+│
+├── infrastructure/         # Infrastructure CloudFormation stack
+│   ├── serverless.infra.yml
+│   └── resources/infra.yml # SQS + infra SSM
+│
+├── config/                 # Stage configuration
+│   ├── infra-dev.yml
+│   ├── runtime-dev.yml
+│   └── ssm-paths.yml
+│
+├── ci/                     # Pipeline scripts + optional pipeline CloudFormation
+│   ├── build.sh            # Package only
+│   ├── verify-artifacts.sh
+│   ├── deploy-data.sh      # Consumes preflight env; create/update (no auto-import)
+│   ├── preflight-data.sh   # Primary read-only Data CREATE/UPDATE/RECOVERY/STOP classifier
+│   ├── validate-ssm.sh
+│   ├── smoke-test.sh
+│   ├── record-deployment.sh
+│   ├── deploy-infra.sh     # Manual / emergency
+│   ├── deploy-app.sh       # Manual / emergency
+│   └── codepipeline.yml
+│
+├── serverless.yml          # Application CloudFormation ({stage}-workflow-service)
+├── buildspec.yml           # Build stage (dev) — package only
+├── stg-buildspec.yml
+├── prd-buildspec.yml
+└── package.json            # Nx project
+```
+
+Do not merge Data, Infrastructure, and Application configuration.
+
+## Deployment order
+
+| Stage | Who runs it | Stack / action |
+|-------|-------------|----------------|
+| Source | CodePipeline | GitHub |
+| Build | Existing CodeBuild (`codebuild-workflow-service-role`) | Package all three Serverless stacks; upload Lambda zips |
+| Deploy-Data | CodeBuild + `ci/preflight-data.sh` + `ci/deploy-data.sh` | `{stage}-workflow-service-data` (create or update of the commit-scoped Data artifact; `STOP` fails the stage; `RECOVERY_REQUIRED` prepares an IMPORT change set and succeeds so approval can run) |
+| Approve-Data-Recovery | Manual approval | SKIP unless `#{DataDeploymentVariables.RECOVERY_REQUIRED}=true` |
+| Recover-Data | CodeBuild + `ci/recover-data.sh` | IMPORT existing `WorkflowTable`, then full Data UPDATE from the commit-scoped artifact. SKIP unless recovery is required. |
+| Deploy-Infra | CodeBuild + `ci/deploy-infra.sh` | `{stage}-workflow-service-infra` |
+| Validate-SSM | CodeBuild + `ci/validate-ssm.sh` | Require `TABLE_*`, `STREAM_ARN`, `SQS_QUEUE_*` |
+| Deploy-App | CodeBuild + `ci/deploy-app.sh` | `{stage}-workflow-service` (name unchanged) |
+| Smoke-Test | CodeBuild + `ci/smoke-test.sh` | `GET /health` |
+| Record-Deployment | CodeBuild + `ci/record-deployment.sh` | Write `LAST_DEPLOYED_COMMIT` |
+
+If Build, Deploy-Data, Deploy-Infra, Validate-SSM, Deploy-App, or Smoke-Test fails, later stages do not run and `LAST_DEPLOYED_COMMIT` is **not** updated. A Record-Deployment failure also marks the pipeline FAILED.
+
+Build does **not** run deploy or smoke-test scripts.
+
+## Package scripts
+
+| Script | Stack / action |
+|--------|----------------|
+| `npm run print:data` | Print data CloudFormation |
+| `npm run print:infra` | Print infrastructure CloudFormation |
+| `npm run package:data` | Package data |
+| `npm run package:infra` | Package infrastructure |
+| `npm run package` | Package application (Serverless) |
+| `npm run deploy:data` | Manual `{stage}-workflow-service-data` |
+| `npm run deploy:infra` | Manual `{stage}-workflow-service-infra` |
+| `npm run validate:ssm` | Require Data + Infra SSM parameters |
+| `npm run deploy:app` | Manual `{stage}-workflow-service` |
+| `npm run smoke-test` | `GET /health` |
+| `npm run deploy` | Legacy `serverless deploy` (application only) |
+| `npm run offline` | `serverless offline --stage dev` |
+| `npm test` | Jest |
+
+Nx: `npx nx build workflow-service`, `npx nx test workflow-service`, `npx nx lint workflow-service`.
+
+## Artifacts and buckets
+
+| Artifact path in BuildArtifact | Stack |
+|--------------------------------|--------|
+| `apps/workflow-service/data/packaged.yaml` | `{stage}-workflow-service-data` |
+| `apps/workflow-service/infrastructure/packaged.yaml` | `{stage}-workflow-service-infra` |
+| `apps/workflow-service/packaged.yaml` | `{stage}-workflow-service` |
+
+Two S3 buckets stay independent:
+
+- **Centralized environment artifact bucket** (`ARTIFACT_BUCKET`, pipeline variable `ArtifactBucket`) — POC `dev-mibc-artifacts`. Immutable templates and Lambda zips at `workflow-service/<commit-sha>/{data,infra,app}/`. STAGE does not determine this bucket name.
+- **CodePipeline artifact store** — source zip and BuildArtifact (existing; not created by the service stacks; not the deployment artifact source)
+
+## POC scope
+
+Step 1 creates a new DynamoDB table `workflow-service-{stage}` and a new SQS queue `{stage}-workflow-service-events`. It does not import or modify existing production EventBridge, DynamoDB, or `{stage}-workflow-service-events-ingest` resources.
+
+Application handlers are unchanged. The application stack reads table and stream identifiers from Data Stack SSM.
+
+The application stack is a **lightweight POC**: one API Lambda for every HTTP route, plus the existing SQS consumer and DynamoDB Stream relay.
+
+```text
+API Gateway
+    ↓
+API Lambda  (src/handlers/http/api.main)
+    ↓
+Workflow Service Table  workflow-service-{stage}
+
+SQS  {stage}-workflow-service-events
+    ↓
+SQS Lambda  carePlanWorkflowRequestedIngest
+    ↓
+Workflow Service Table
+
+Workflow Service Table
+    ↓
+DynamoDB Stream
+    ↓
+Stream Lambda  outboxRelay  (ESM disabled in this POC; STREAM_ARN still published)
+    ↓
+EventBridge
+```
+
+Change detection is not part of Step 1. Every pipeline run deploys Data, Infra, and App.

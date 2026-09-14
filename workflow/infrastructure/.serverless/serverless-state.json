@@ -1,0 +1,195 @@
+{
+  "service": {
+    "service": "workflow-service-infra",
+    "serviceObject": {
+      "name": "workflow-service-infra"
+    },
+    "provider": {
+      "name": "aws",
+      "runtime": "nodejs22.x",
+      "region": "us-east-1",
+      "stage": "dev",
+      "stackName": "dev-workflow-service-infra",
+      "versionFunctions": false,
+      "deploymentBucket": "dev-mibc-workflow-service-bucket",
+      "tags": {
+        "Service": "workflow-service",
+        "Stage": "dev",
+        "ManagedBy": "serverless",
+        "Stack": "infrastructure"
+      },
+      "deploymentBucketObject": {
+        "name": "dev-mibc-workflow-service-bucket",
+        "serverSideEncryption": "AES256"
+      },
+      "compiledCloudFormationTemplate": {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Description": "The AWS CloudFormation template for this Serverless application",
+        "Resources": {
+          "WorkflowEventsQueue": {
+            "Type": "AWS::SQS::Queue",
+            "Properties": {
+              "QueueName": "dev-workflow-service-events",
+              "VisibilityTimeout": 180,
+              "ReceiveMessageWaitTimeSeconds": 20,
+              "MessageRetentionPeriod": 1209600,
+              "Tags": [
+                {
+                  "Key": "Service",
+                  "Value": "workflow-service"
+                },
+                {
+                  "Key": "Stage",
+                  "Value": "dev"
+                },
+                {
+                  "Key": "Purpose",
+                  "Value": "WorkQueue"
+                },
+                {
+                  "Key": "ManagedBy",
+                  "Value": "serverless"
+                }
+              ]
+            }
+          },
+          "WorkflowEventsQueueUrlParameter": {
+            "Type": "AWS::SSM::Parameter",
+            "Properties": {
+              "Name": "/dev/workflow-service/SQS_QUEUE_URL",
+              "Type": "String",
+              "Description": "Workflow events queue URL",
+              "Value": {
+                "Ref": "WorkflowEventsQueue"
+              },
+              "Tags": {
+                "Service": "workflow-service",
+                "Stage": "dev"
+              }
+            }
+          },
+          "WorkflowEventsQueueArnParameter": {
+            "Type": "AWS::SSM::Parameter",
+            "Properties": {
+              "Name": "/dev/workflow-service/SQS_QUEUE_ARN",
+              "Type": "String",
+              "Description": "Workflow events queue ARN",
+              "Value": {
+                "Fn::GetAtt": [
+                  "WorkflowEventsQueue",
+                  "Arn"
+                ]
+              },
+              "Tags": {
+                "Service": "workflow-service",
+                "Stage": "dev"
+              }
+            }
+          }
+        },
+        "Outputs": {
+          "ServerlessDeploymentBucketName": {
+            "Value": "dev-mibc-workflow-service-bucket",
+            "Export": {
+              "Name": "sls-workflow-service-infra-dev-ServerlessDeploymentBucketName"
+            }
+          }
+        }
+      }
+    },
+    "custom": {
+      "infra": {
+        "queueName": "dev-workflow-service-events"
+      }
+    },
+    "pluginsData": {},
+    "functions": {},
+    "resources": {
+      "Resources": {
+        "WorkflowEventsQueue": {
+          "Type": "AWS::SQS::Queue",
+          "Properties": {
+            "QueueName": "dev-workflow-service-events",
+            "VisibilityTimeout": 180,
+            "ReceiveMessageWaitTimeSeconds": 20,
+            "MessageRetentionPeriod": 1209600,
+            "Tags": [
+              {
+                "Key": "Service",
+                "Value": "workflow-service"
+              },
+              {
+                "Key": "Stage",
+                "Value": "dev"
+              },
+              {
+                "Key": "Purpose",
+                "Value": "WorkQueue"
+              },
+              {
+                "Key": "ManagedBy",
+                "Value": "serverless"
+              }
+            ]
+          }
+        },
+        "WorkflowEventsQueueUrlParameter": {
+          "Type": "AWS::SSM::Parameter",
+          "Properties": {
+            "Name": "/dev/workflow-service/SQS_QUEUE_URL",
+            "Type": "String",
+            "Description": "Workflow events queue URL",
+            "Value": {
+              "Ref": "WorkflowEventsQueue"
+            },
+            "Tags": {
+              "Service": "workflow-service",
+              "Stage": "dev"
+            }
+          }
+        },
+        "WorkflowEventsQueueArnParameter": {
+          "Type": "AWS::SSM::Parameter",
+          "Properties": {
+            "Name": "/dev/workflow-service/SQS_QUEUE_ARN",
+            "Type": "String",
+            "Description": "Workflow events queue ARN",
+            "Value": {
+              "Fn::GetAtt": [
+                "WorkflowEventsQueue",
+                "Arn"
+              ]
+            },
+            "Tags": {
+              "Service": "workflow-service",
+              "Stage": "dev"
+            }
+          }
+        }
+      },
+      "Outputs": {}
+    },
+    "configValidationMode": "warn",
+    "serviceFilename": "serverless.infra.yml",
+    "initialServerlessConfig": {
+      "service": "workflow-service-infra",
+      "configValidationMode": "warn",
+      "frameworkVersion": "3.x",
+      "provider": {
+        "$ref": "$[\"service\"][\"provider\"]"
+      },
+      "custom": {
+        "$ref": "$[\"service\"][\"custom\"]"
+      },
+      "resources": {
+        "$ref": "$[\"service\"][\"resources\"]"
+      }
+    },
+    "layers": {},
+    "isDashboardMonitoringPreconfigured": false
+  },
+  "package": {
+    "artifactDirectoryName": "serverless/workflow-service-infra/dev/1788929586449-2026-09-09T04:53:06.449Z",
+    "artifact": ""
+  }
+}

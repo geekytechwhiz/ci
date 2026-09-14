@@ -1,0 +1,281 @@
+{
+  "service": {
+    "service": "workflow-service-data",
+    "serviceObject": {
+      "name": "workflow-service-data"
+    },
+    "provider": {
+      "name": "aws",
+      "runtime": "nodejs22.x",
+      "region": "us-east-1",
+      "stage": "dev",
+      "stackName": "dev-workflow-service-data",
+      "versionFunctions": false,
+      "deploymentBucket": "dev-mibc-workflow-service-bucket",
+      "tags": {
+        "Service": "workflow-service",
+        "Stage": "dev",
+        "ManagedBy": "serverless",
+        "Stack": "data"
+      },
+      "deploymentBucketObject": {
+        "name": "dev-mibc-workflow-service-bucket",
+        "serverSideEncryption": "AES256"
+      },
+      "compiledCloudFormationTemplate": {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Description": "The AWS CloudFormation template for this Serverless application",
+        "Resources": {
+          "WorkflowTable": {
+            "Type": "AWS::DynamoDB::Table",
+            "DeletionPolicy": "Retain",
+            "UpdateReplacePolicy": "Retain",
+            "Properties": {
+              "TableName": "workflow-service-dev",
+              "BillingMode": "PAY_PER_REQUEST",
+              "AttributeDefinitions": [
+                {
+                  "AttributeName": "pk",
+                  "AttributeType": "S"
+                },
+                {
+                  "AttributeName": "sk",
+                  "AttributeType": "S"
+                }
+              ],
+              "KeySchema": [
+                {
+                  "AttributeName": "pk",
+                  "KeyType": "HASH"
+                },
+                {
+                  "AttributeName": "sk",
+                  "KeyType": "RANGE"
+                }
+              ],
+              "StreamSpecification": {
+                "StreamViewType": "NEW_AND_OLD_IMAGES"
+              },
+              "PointInTimeRecoverySpecification": {
+                "PointInTimeRecoveryEnabled": true
+              },
+              "Tags": [
+                {
+                  "Key": "Service",
+                  "Value": "workflow-service"
+                },
+                {
+                  "Key": "Stage",
+                  "Value": "dev"
+                },
+                {
+                  "Key": "Purpose",
+                  "Value": "WorkflowTable"
+                },
+                {
+                  "Key": "ManagedBy",
+                  "Value": "serverless"
+                }
+              ]
+            }
+          },
+          "WorkflowTableNameParameter": {
+            "Type": "AWS::SSM::Parameter",
+            "Properties": {
+              "Name": "/dev/workflow-service/TABLE_NAME",
+              "Type": "String",
+              "Description": "Workflow Service DynamoDB table name",
+              "Value": {
+                "Ref": "WorkflowTable"
+              },
+              "Tags": {
+                "Service": "workflow-service",
+                "Stage": "dev"
+              }
+            }
+          },
+          "WorkflowTableArnParameter": {
+            "Type": "AWS::SSM::Parameter",
+            "Properties": {
+              "Name": "/dev/workflow-service/TABLE_ARN",
+              "Type": "String",
+              "Description": "Workflow Service DynamoDB table ARN",
+              "Value": {
+                "Fn::GetAtt": [
+                  "WorkflowTable",
+                  "Arn"
+                ]
+              },
+              "Tags": {
+                "Service": "workflow-service",
+                "Stage": "dev"
+              }
+            }
+          },
+          "WorkflowTableStreamArnParameter": {
+            "Type": "AWS::SSM::Parameter",
+            "Properties": {
+              "Name": "/dev/workflow-service/STREAM_ARN",
+              "Type": "String",
+              "Description": "Workflow Service DynamoDB stream ARN",
+              "Value": {
+                "Fn::GetAtt": [
+                  "WorkflowTable",
+                  "StreamArn"
+                ]
+              },
+              "Tags": {
+                "Service": "workflow-service",
+                "Stage": "dev"
+              }
+            }
+          }
+        },
+        "Outputs": {
+          "ServerlessDeploymentBucketName": {
+            "Value": "dev-mibc-workflow-service-bucket",
+            "Export": {
+              "Name": "sls-workflow-service-data-dev-ServerlessDeploymentBucketName"
+            }
+          }
+        }
+      }
+    },
+    "custom": {
+      "tableName": "workflow-service-dev"
+    },
+    "pluginsData": {},
+    "functions": {},
+    "resources": {
+      "Resources": {
+        "WorkflowTable": {
+          "Type": "AWS::DynamoDB::Table",
+          "DeletionPolicy": "Retain",
+          "UpdateReplacePolicy": "Retain",
+          "Properties": {
+            "TableName": "workflow-service-dev",
+            "BillingMode": "PAY_PER_REQUEST",
+            "AttributeDefinitions": [
+              {
+                "AttributeName": "pk",
+                "AttributeType": "S"
+              },
+              {
+                "AttributeName": "sk",
+                "AttributeType": "S"
+              }
+            ],
+            "KeySchema": [
+              {
+                "AttributeName": "pk",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "sk",
+                "KeyType": "RANGE"
+              }
+            ],
+            "StreamSpecification": {
+              "StreamViewType": "NEW_AND_OLD_IMAGES"
+            },
+            "PointInTimeRecoverySpecification": {
+              "PointInTimeRecoveryEnabled": true
+            },
+            "Tags": [
+              {
+                "Key": "Service",
+                "Value": "workflow-service"
+              },
+              {
+                "Key": "Stage",
+                "Value": "dev"
+              },
+              {
+                "Key": "Purpose",
+                "Value": "WorkflowTable"
+              },
+              {
+                "Key": "ManagedBy",
+                "Value": "serverless"
+              }
+            ]
+          }
+        },
+        "WorkflowTableNameParameter": {
+          "Type": "AWS::SSM::Parameter",
+          "Properties": {
+            "Name": "/dev/workflow-service/TABLE_NAME",
+            "Type": "String",
+            "Description": "Workflow Service DynamoDB table name",
+            "Value": {
+              "Ref": "WorkflowTable"
+            },
+            "Tags": {
+              "Service": "workflow-service",
+              "Stage": "dev"
+            }
+          }
+        },
+        "WorkflowTableArnParameter": {
+          "Type": "AWS::SSM::Parameter",
+          "Properties": {
+            "Name": "/dev/workflow-service/TABLE_ARN",
+            "Type": "String",
+            "Description": "Workflow Service DynamoDB table ARN",
+            "Value": {
+              "Fn::GetAtt": [
+                "WorkflowTable",
+                "Arn"
+              ]
+            },
+            "Tags": {
+              "Service": "workflow-service",
+              "Stage": "dev"
+            }
+          }
+        },
+        "WorkflowTableStreamArnParameter": {
+          "Type": "AWS::SSM::Parameter",
+          "Properties": {
+            "Name": "/dev/workflow-service/STREAM_ARN",
+            "Type": "String",
+            "Description": "Workflow Service DynamoDB stream ARN",
+            "Value": {
+              "Fn::GetAtt": [
+                "WorkflowTable",
+                "StreamArn"
+              ]
+            },
+            "Tags": {
+              "Service": "workflow-service",
+              "Stage": "dev"
+            }
+          }
+        }
+      },
+      "Outputs": {}
+    },
+    "configValidationMode": "warn",
+    "serviceFilename": "serverless.data.yml",
+    "initialServerlessConfig": {
+      "service": "workflow-service-data",
+      "configValidationMode": "warn",
+      "frameworkVersion": "3.x",
+      "provider": {
+        "$ref": "$[\"service\"][\"provider\"]"
+      },
+      "custom": {
+        "$ref": "$[\"service\"][\"custom\"]"
+      },
+      "resources": {
+        "$ref": "$[\"service\"][\"resources\"]"
+      }
+    },
+    "layers": {},
+    "isDashboardMonitoringPreconfigured": false
+  },
+  "package": {
+    "artifactDirectoryName": "serverless/workflow-service-data/dev/1788939303188-2026-09-09T07:35:03.188Z",
+    "artifact": ""
+  }
+}

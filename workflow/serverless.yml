@@ -1,0 +1,715 @@
+service: workflow-service
+
+configValidationMode: warn
+
+frameworkVersion: '3.x'
+
+# Shared plugin set + offline (shared plugins.yml omits offline; keep it for local DX).
+plugins:
+  - serverless-esbuild
+  - serverless-dotenv-plugin
+  - serverless-auto-swagger
+  - serverless-offline
+  - '@myvitalrx/mvrx-resource-registry'
+
+package: ${file(../../infra/serverless/package.yml)}
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  # Preserve existing CloudFormation stack identity (do not rename to *-app).
+  stackName: ${self:provider.stage}-workflow-service
+  versionFunctions: false
+
+  deploymentBucket:
+    name: ${self:provider.stage}-mibc-workflow-service-bucket
+    serverSideEncryption: AES256
+  memorySize: 512
+  timeout: 30
+
+  tracing:
+    lambda: true
+    apiGateway: true
+
+  logRetentionInDays: ${self:custom.logRetentionByStage.${self:provider.stage}, '14'}
+
+  environment: ${file(./config/runtime-${self:provider.stage}.yml)}
+
+  tags:
+    Service: ${self:service}
+    Stage: ${self:provider.stage}
+    ManagedBy: serverless
+    Stack: application
+
+  iamRoleStatements: 
+    - ${file(./config/permissions/dynamodb.yml)}
+    - ${file(./config/permissions/dynamodb-stream.yml)}
+    - ${file(./config/permissions/sqs.yml)}
+    - ${file(../../infra/serverless/permissions/ssm-read.yml)}
+    - ${file(../../infra/serverless/permissions/xray.yml)}
+
+custom:
+  sharedSsmPaths: ${file(../../infra/serverless/config/shared-ssm-paths.yml)}
+  logRetentionByStage: ${file(../../infra/serverless/config/log-retention-by-stage.yml)}
+  app: ${file(./config/app-custom.yml)}
+  apiTitle: Workflow Service API
+
+  resourceRegistry:
+    enabled: true
+    platformOwner: workflow-service
+    parameters:
+      WORKFLOW_EVENTS_QUEUE_URL:
+        value: '{{resolve:ssm:/${self:provider.stage}/workflow-service/SQS_QUEUE_URL}}'
+      LAMBDA_LOG_RETENTION_DAYS:
+        value: ${self:custom.logRetentionByStage.${self:provider.stage}, '14'}
+
+  # REST API CORS: YAML anchors (Serverless requires real objects on http events).
+  cors: &httpApiCors
+    origin: ${self:custom.app.corsOrigin.${self:provider.stage}, '*'}
+    headers:
+      - Content-Type
+      - X-Amz-Date
+      - Authorization
+      - X-Api-Key
+      - X-Correlation-Id
+      - X-Request-Id
+      - X-Requested-With
+      - If-Match
+      - Idempotency-Key
+      - Sec-Ch-Ua
+      - Sec-Ch-Ua-Mobile
+      - Sec-Ch-Ua-Platform
+
+  securedResponses: &securedResponses
+    '200': OK
+    '400': Bad request
+    '401': Unauthorized
+    '403': Forbidden
+    '500': Server error
+
+  definitionCreateResponses: &definitionCreateResponses
+    '201': Created
+    '400': Bad request
+    '401': Unauthorized
+    '403': Forbidden
+    '409': Conflict
+    '422': Business rule / max steps exceeded
+    '500': Server error
+
+  definitionMutateResponses: &definitionMutateResponses
+    '200': OK
+    '400': Bad request
+    '401': Unauthorized
+    '403': Forbidden
+    '404': Not found
+    '409': Conflict
+    '422': Business rule / max steps exceeded
+    '428': Precondition required (If-Match / recordVersion)
+    '500': Server error
+
+  definitionReadResponses: &definitionReadResponses
+    '200': OK
+    '401': Unauthorized
+    '403': Forbidden
+    '404': Not found
+    '500': Server error
+
+  definitionListResponses: &definitionListResponses
+    '200': OK
+    '400': Bad request / unsupported filter
+    '401': Unauthorized
+    '403': Forbidden
+    '500': Server error
+
+  runtimeCreateResponses: &runtimeCreateResponses
+    '201': Created
+    '400': Bad request
+    '401': Unauthorized
+    '403': Forbidden
+    '404': Not found
+    '409': Conflict
+    '422': Business rule validation
+    '500': Server error
+
+  runtimeCommandResponses: &runtimeCommandResponses
+    '200': OK
+    '400': Bad request
+    '401': Unauthorized
+    '403': Forbidden
+    '404': Not found
+    '409': Conflict
+    '422': Business rule validation
+    '428': Precondition required (If-Match / recordVersion)
+    '500': Server error
+
+  runtimeQueryResponses: &runtimeQueryResponses
+    '200': OK
+    '400': Bad request / unsupported or ambiguous filter
+    '401': Unauthorized
+    '403': Forbidden
+    '404': Not found
+    '500': Server error
+
+  runtimeQueryListResponses: &runtimeQueryListResponses
+    '200': OK
+    '400': Bad request / unsupported or ambiguous filter
+    '401': Unauthorized
+    '403': Forbidden
+    '500': Server error
+
+  sourcemapsByStage: ${file(../../infra/serverless/config/sourcemaps-by-stage.yml)}
+  keepNamesByStage: ${file(../../infra/serverless/config/keep-names-by-stage.yml)}
+  esbuild: ${file(../../infra/serverless/config/esbuild.yml)}
+  autoswagger: ${file(../../infra/serverless/config/autoswagger-base.yml)}
+  serverless-offline: ${file(../../infra/serverless/config/serverless-offline.yml)}
+
+functions:
+  # POC: one API Lambda for every HTTP route. Existing handler files remain
+  # as internal modules and are not deployed as separate functions.
+  api:
+    handler: src/handlers/http/api.main
+    description: Single HTTP dispatcher for all Workflow Service API Gateway routes (POC)
+    events:
+      - http:
+          path: /health
+          method: get
+          cors: true
+      - http:
+          path: v1/platform/workflow-templates
+          method: post
+          cors: *httpApiCors
+          bodyType: CreateWorkflowTemplateRequest
+          summary: Create platform workflow template
+          responses: *definitionCreateResponses
+      - http:
+          path: v1/platform/workflow-templates/{templateId}
+          method: put
+          cors: *httpApiCors
+          bodyType: UpdateWorkflowTemplateRequest
+          summary: Update platform workflow template draft
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/platform/workflow-templates/{templateId}/publish
+          method: post
+          cors: *httpApiCors
+          bodyType: PublishWorkflowTemplateRequest
+          summary: Publish platform workflow template
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/platform/workflow-templates/{templateId}/inactivate
+          method: post
+          cors: *httpApiCors
+          bodyType: InactivateWorkflowTemplateRequest
+          summary: Inactivate platform workflow template
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/platform/workflow-templates/{templateId}/clone
+          method: post
+          cors: *httpApiCors
+          bodyType: CloneWorkflowTemplateRequest
+          summary: Clone platform workflow template
+          responses: *definitionCreateResponses
+      - http:
+          path: v1/platform/workflow-templates/{templateId}
+          method: get
+          cors: *httpApiCors
+          summary: Get platform workflow template
+          responses: *definitionReadResponses
+      - http:
+          path: v1/platform/workflow-templates/{templateId}/history
+          method: get
+          cors: *httpApiCors
+          summary: List platform workflow template history
+          queryStringParameters:
+            - limit
+            - cursor
+          responses: *definitionListResponses
+      - http:
+          path: v1/platform/workflow-templates
+          method: get
+          cors: *httpApiCors
+          summary: List platform workflow templates
+          queryStringParameters:
+            - templateId
+            - workflowStage
+            - workflowType
+            - status
+            - program
+            - condition
+            - basedOn
+            - category
+            - shareScope
+            - language
+            - country
+            - limit
+            - cursor
+          responses: *definitionListResponses
+      - http:
+          path: v1/organizations/{orgId}/workflow-templates
+          method: post
+          cors: *httpApiCors
+          bodyType: CreateWorkflowTemplateRequest
+          summary: Create organization workflow template
+          responses: *definitionCreateResponses
+      - http:
+          path: v1/organizations/{orgId}/workflow-templates/{templateId}
+          method: put
+          cors: *httpApiCors
+          bodyType: UpdateWorkflowTemplateRequest
+          summary: Update organization workflow template draft
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/organizations/{orgId}/workflow-templates/{templateId}/publish
+          method: post
+          cors: *httpApiCors
+          bodyType: PublishWorkflowTemplateRequest
+          summary: Publish organization workflow template
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/organizations/{orgId}/workflow-templates/{templateId}/inactivate
+          method: post
+          cors: *httpApiCors
+          bodyType: InactivateWorkflowTemplateRequest
+          summary: Inactivate organization workflow template
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/organizations/{orgId}/workflow-templates/{templateId}/clone
+          method: post
+          cors: *httpApiCors
+          bodyType: CloneWorkflowTemplateRequest
+          summary: Clone organization workflow template
+          responses: *definitionCreateResponses
+      - http:
+          path: v1/organizations/{orgId}/workflow-templates/{templateId}
+          method: get
+          cors: *httpApiCors
+          summary: Get organization workflow template
+          responses: *definitionReadResponses
+      - http:
+          path: v1/organizations/{orgId}/workflow-templates
+          method: get
+          cors: *httpApiCors
+          summary: List organization workflow templates
+          queryStringParameters:
+            - templateId
+            - workflowStage
+            - workflowType
+            - status
+            - program
+            - condition
+            - basedOn
+            - category
+            - shareScope
+            - language
+            - country
+            - limit
+            - cursor
+          responses: *definitionListResponses
+      - http:
+          path: v1/organizations/{orgId}/workflow-templates/from-platform
+          method: post
+          cors: *httpApiCors
+          bodyType: PutCarePlanWorkflowMappingsRequest
+          summary: Ensure org workflow template copies from platform sources (internal S2S)
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/organizations/{orgId}/workflow-templates/clone-for-care-plan
+          method: post
+          cors: *httpApiCors
+          bodyType: CloneOrgWorkflowTemplatesForCarePlanRequest
+          summary: Clone Org Template workflows into Care Plan-scoped drafts (internal S2S)
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/organizations/{orgId}/workflow-templates/publish-mapped
+          method: post
+          cors: *httpApiCors
+          summary: Publish org workflow templates by id (internal S2S; Org Template publish)
+          description: |
+            Publishes org-scoped workflow templates listed in the body.
+            Idempotent for already-published ids. Never loads or publishes platform templates.
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/organizations/{orgId}/care-plan-creation-sessions
+          method: post
+          cors: *httpApiCors
+          summary: Start Care Plan creation session and clone workflow drafts (internal S2S)
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/organizations/{orgId}/care-plan-creation-sessions/{creationSessionId}
+          method: get
+          cors: *httpApiCors
+          summary: Get Care Plan creation session workflow drafts (internal S2S)
+          responses: *definitionReadResponses
+      - http:
+          path: v1/organizations/{orgId}/care-plan-creation-sessions/{creationSessionId}
+          method: delete
+          cors: *httpApiCors
+          summary: Discard Care Plan creation session and delete draft workflows (internal S2S)
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/organizations/{orgId}/care-plan-creation-sessions/{creationSessionId}/finalize
+          method: post
+          cors: *httpApiCors
+          summary: Mark Care Plan creation session finalized after Care Plan persist (internal S2S)
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/organizations/{orgId}/care-plan-creation-sessions/{creationSessionId}/reserve-care-plan
+          method: post
+          cors: *httpApiCors
+          summary: Reserve exactly one Care Plan catalog id on a pending session (internal S2S)
+          description: |
+            Conditionally stores carePlanTemplateId on the session before CP persistence.
+            Concurrent callers converge on the same reserved id (at most one Care Plan per session).
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/organizations/{orgId}/care-plan-creation-sessions/{creationSessionId}/publish-workflows
+          method: post
+          cors: *httpApiCors
+          summary: Publish Care Plan session workflow drafts only (internal S2S)
+          description: |
+            Publishes O1A/O2A/O3A from the pending session. Never publishes source O1/O2/O3.
+            Already-published session workflows are skipped. Optional carePlanTemplateId attaches
+            the Care Plan catalog id while the session remains pending (retry-safe).
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/organizations/{orgId}/care-plan-templates/{carePlanTemplateId}/workflow-mappings
+          method: get
+          cors: *httpApiCors
+          summary: List care plan template workflow mappings
+          responses: *definitionReadResponses
+      - http:
+          path: v1/organizations/{orgId}/care-plan-templates/{carePlanTemplateId}/workflow-mappings
+          method: put
+          cors: *httpApiCors
+          bodyType: PutCarePlanWorkflowMappingsRequest
+          summary: Put care plan template workflow mappings
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/organizations/{orgId}/care-plan-templates/{carePlanTemplateId}/workflow-mappings/{workflowStage}
+          method: delete
+          cors: *httpApiCors
+          bodyType: DeleteCarePlanWorkflowMappingRequest
+          summary: Delete care plan template workflow mapping for a stage
+          responses: *definitionMutateResponses
+      - http:
+          path: v1/workflows
+          method: post
+          cors: *httpApiCors
+          bodyType: CreateWorkflowRequest
+          summary: Create workflow
+          responses: *runtimeCreateResponses
+      - http:
+          path: v1/workflows/{workflowId}/start
+          method: post
+          cors: *httpApiCors
+          bodyType: WorkflowOccRequest
+          summary: Start workflow
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/assign
+          method: post
+          cors: *httpApiCors
+          bodyType: AssignWorkflowRequest
+          summary: Assign workflow
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/wait
+          method: post
+          cors: *httpApiCors
+          bodyType: ReasonWorkflowRequest
+          summary: Mark workflow waiting
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/block
+          method: post
+          cors: *httpApiCors
+          bodyType: ReasonWorkflowRequest
+          summary: Mark workflow blocked
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/resume
+          method: post
+          cors: *httpApiCors
+          bodyType: WorkflowOccRequest
+          summary: Resume workflow
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/complete
+          method: post
+          cors: *httpApiCors
+          bodyType: CompleteWorkflowRequest
+          summary: Complete workflow
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/cancel
+          method: post
+          cors: *httpApiCors
+          bodyType: CancelWorkflowRequest
+          summary: Cancel workflow
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/start
+          method: post
+          cors: *httpApiCors
+          bodyType: StepActionRequest
+          summary: Start step
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/complete
+          method: post
+          cors: *httpApiCors
+          bodyType: StepActionRequest
+          summary: Complete step
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/skip
+          method: post
+          cors: *httpApiCors
+          bodyType: StepActionWithReasonRequest
+          summary: Skip step
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/wait
+          method: post
+          cors: *httpApiCors
+          bodyType: StepActionWithReasonRequest
+          summary: Mark step waiting
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/block
+          method: post
+          cors: *httpApiCors
+          bodyType: StepActionWithReasonRequest
+          summary: Mark step blocked
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/resume
+          method: post
+          cors: *httpApiCors
+          bodyType: StepActionRequest
+          summary: Resume step
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/defer
+          method: post
+          cors: *httpApiCors
+          bodyType: StepActionWithReasonRequest
+          summary: Defer step
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/cancel
+          method: post
+          cors: *httpApiCors
+          bodyType: StepActionWithReasonRequest
+          summary: Cancel step
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/assign
+          method: post
+          cors: *httpApiCors
+          bodyType: AssignStepRequest
+          summary: Assign step
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps
+          method: post
+          cors: *httpApiCors
+          bodyType: AddWorkflowStepRequest
+          summary: Add step to patient workflow
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}
+          method: delete
+          cors: *httpApiCors
+          bodyType: WorkflowOccRequest
+          summary: Remove step from patient workflow
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/checklists
+          method: post
+          cors: *httpApiCors
+          bodyType: AddStepChecklistRequest
+          summary: Add checklist item to patient workflow step
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/checklists/{checklistId}
+          method: delete
+          cors: *httpApiCors
+          bodyType: WorkflowOccRequest
+          summary: Remove checklist item from patient workflow step
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/checklists/{checklistId}
+          method: get
+          cors: *httpApiCors
+          summary: Get runtime checklist
+          responses: *runtimeQueryResponses
+      - http:
+          path: v1/workflows/{workflowId}/checklists
+          method: get
+          cors: *httpApiCors
+          summary: List runtime checklists for workflow
+          responses: *runtimeQueryResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/checklists
+          method: get
+          cors: *httpApiCors
+          summary: List runtime checklists for step
+          responses: *runtimeQueryResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/checklists/{checklistId}/start
+          method: post
+          cors: *httpApiCors
+          bodyType: ChecklistActionRequest
+          summary: Start checklist
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/checklists/{checklistId}/complete
+          method: post
+          cors: *httpApiCors
+          bodyType: ChecklistActionRequest
+          summary: Complete checklist
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/checklists/{checklistId}/skip
+          method: post
+          cors: *httpApiCors
+          bodyType: ChecklistActionRequest
+          summary: Skip checklist (reason optional)
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/checklists/{checklistId}/defer
+          method: post
+          cors: *httpApiCors
+          bodyType: ChecklistActionRequest
+          summary: Defer checklist (reason optional)
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/checklists/{checklistId}/block
+          method: post
+          cors: *httpApiCors
+          bodyType: ChecklistActionWithReasonRequest
+          summary: Block checklist (reason required)
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/checklists/{checklistId}/resume
+          method: post
+          cors: *httpApiCors
+          bodyType: ChecklistActionRequest
+          summary: Resume checklist
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/checklists/{checklistId}/cancel
+          method: post
+          cors: *httpApiCors
+          bodyType: ChecklistActionWithReasonRequest
+          summary: Cancel checklist
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}/steps/{stepId}/checklists/{checklistId}/assign
+          method: post
+          cors: *httpApiCors
+          bodyType: AssignChecklistRequest
+          summary: Assign checklist
+          responses: *runtimeCommandResponses
+      - http:
+          path: v1/workflows/{workflowId}
+          method: get
+          cors: *httpApiCors
+          summary: Get workflow by id
+          queryStringParameters:
+            - include
+          responses: *runtimeQueryResponses
+      - http:
+          path: v1/workflows/{workflowId}/history
+          method: get
+          cors: *httpApiCors
+          summary: List workflow audit history
+          queryStringParameters:
+            - limit
+            - cursor
+          responses: *runtimeQueryResponses
+      - http:
+          path: v1/workflows/{workflowId}/notes
+          method: get
+          cors: *httpApiCors
+          summary: List workflow notes
+          queryStringParameters:
+            - limit
+            - cursor
+          responses: *runtimeQueryResponses
+      - http:
+          path: v1/workflows/{workflowId}/evidence
+          method: get
+          cors: *httpApiCors
+          summary: List workflow evidence
+          queryStringParameters:
+            - stepId
+            - limit
+            - cursor
+          responses: *runtimeQueryResponses
+      - http:
+          path: v1/workflows
+          method: get
+          cors: *httpApiCors
+          summary: List workflows (filter-index matrix)
+          queryStringParameters:
+            - patientId
+            - carePlanId
+            - workflowType
+            - workflowStatus
+            - assigneeType
+            - assigneeId
+            - dueBefore
+            - dueAfter
+            - overdue
+            - limit
+            - cursor
+          responses: *runtimeQueryListResponses
+      - http:
+          path: v1/dashboard/queue
+          method: get
+          cors: *httpApiCors
+          summary: Dashboard workflow queue
+          queryStringParameters:
+            - queue
+            - limit
+            - cursor
+          responses: *runtimeQueryListResponses
+      - http:
+          path: v1/workflows/{workflowId}/workbench
+          method: get
+          cors: *httpApiCors
+          summary: Workbench projection for a workflow (stepsTracker includes nested checklists)
+          responses: *runtimeQueryResponses
+      - http:
+          path: v1/workflows/{workflowId}/completion-readiness
+          method: get
+          cors: *httpApiCors
+          summary: Completion readiness for a workflow
+          responses: *runtimeQueryResponses
+
+  carePlanWorkflowRequestedIngest:
+    handler: src/handlers/events/consumer/sqs/carePlanWorkflowRequestedIngest.main
+    description: SQS consumer for CarePlanWorkflowRequested.v1 (validate + engine.create)
+    timeout: 30
+    memorySize: 256
+    events:
+      - sqs:
+          arn: '{{resolve:ssm:/${self:provider.stage}/workflow-service/SQS_QUEUE_ARN}}'
+          batchSize: 5
+          functionResponseType: ReportBatchItemFailures
+
+  # WR-07: transactional outbox relay. DynamoDB stream ESM is disabled for this
+  # infrastructure POC. STREAM_ARN remains in the Data stack SSM contract.
+  # Handler source is unchanged.
+  outboxRelay:
+    handler: src/handlers/streams/outboxRelay.main
+    description: DynamoDB Streams outbox relay → EventBridge (Started/Completed/Cancelled)
+    timeout: 30
+    memorySize: 256
+
+resources:
+  - ${file(./config/resources/gateway-responses.yml)}

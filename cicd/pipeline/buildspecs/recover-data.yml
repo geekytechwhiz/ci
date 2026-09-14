@@ -1,0 +1,33 @@
+version: 0.2
+# Reference buildspec: Recover-Data (after manual approval)
+# Executes prepared IMPORT change set and restores Data SSM contract.
+
+env:
+  shell: bash
+  exported-variables:
+    - RECOVERY_SUCCESS
+    - DATA_ACTION
+    - CURRENT_COMMIT
+
+phases:
+  install:
+    commands:
+      - npm install js-yaml --force
+
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+        source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+        export DATA_RECOVERY_PHASE=execute
+        export RECOVERY_STATUS=APPROVAL_GRANTED
+        echo "STAGE=${STAGE:?} SERVICE_NAME=${SERVICE_NAME:?}"
+
+  build:
+    commands:
+      - "${CICD_SCRIPTS_DIR}/run-recover-data.sh"
+
+  post_build:
+    commands:
+      - echo "RECOVERY_SUCCESS=${RECOVERY_SUCCESS:-}"

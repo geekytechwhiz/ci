@@ -1,0 +1,43 @@
+Resources:
+  WorkflowEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ${self:custom.infra.queueName}
+      VisibilityTimeout: 180
+      ReceiveMessageWaitTimeSeconds: 20
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Service
+          Value: workflow-service
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Purpose
+          Value: WorkQueue
+        - Key: ManagedBy
+          Value: serverless
+
+  WorkflowEventsQueueUrlParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /${self:provider.stage}/workflow-service/SQS_QUEUE_URL
+      Type: String
+      Description: Workflow events queue URL
+      Value:
+        Ref: WorkflowEventsQueue
+      Tags:
+        Service: workflow-service
+        Stage: ${self:provider.stage}
+
+  WorkflowEventsQueueArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /${self:provider.stage}/workflow-service/SQS_QUEUE_ARN
+      Type: String
+      Description: Workflow events queue ARN
+      Value:
+        Fn::GetAtt:
+          - WorkflowEventsQueue
+          - Arn
+      Tags:
+        Service: workflow-service
+        Stage: ${self:provider.stage}

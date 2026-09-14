@@ -1,0 +1,54 @@
+Resources:
+  GatewayResponseDefault4XX:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      ResponseType: DEFAULT_4XX
+      RestApiId:
+        Ref: ApiGatewayRestApi
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: >-
+          'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Correlation-Id,X-Request-Id,X-Requested-With,Sec-Ch-Ua,Sec-Ch-Ua-Mobile,Sec-Ch-Ua-Platform'
+        gatewayresponse.header.Access-Control-Allow-Methods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+
+  GatewayResponseDefault5XX:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      ResponseType: DEFAULT_5XX
+      RestApiId:
+        Ref: ApiGatewayRestApi
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: >-
+          'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Correlation-Id,X-Request-Id,X-Requested-With,Sec-Ch-Ua,Sec-Ch-Ua-Mobile,Sec-Ch-Ua-Platform'
+        gatewayresponse.header.Access-Control-Allow-Methods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+
+  GatewayResponseUnauthorized:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      ResponseType: UNAUTHORIZED
+      RestApiId:
+        Ref: ApiGatewayRestApi
+      StatusCode: '401'
+      ResponseParameters:
+        gatewayresponse.header.X-Content-Type-Options: "'nosniff'"
+        gatewayresponse.header.X-XSS-Protection: "'1'"
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.X-Frame-Options: "'DENY'"
+        gatewayresponse.header.Access-Control-Allow-Headers: >-
+          'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Correlation-Id,X-Request-Id,X-Requested-With,Sec-Ch-Ua,Sec-Ch-Ua-Mobile,Sec-Ch-Ua-Platform'
+        gatewayresponse.header.Access-Control-Allow-Methods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+      ResponseTemplates:
+        application/json: "{\"success\":false,\"message\":$context.error.messageString,\"errorCode\":\"INVALID_TOKEN\",\"statusCode\":401}"
+
+  GatewayResponseAccessDenied:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      ResponseType: ACCESS_DENIED
+      RestApiId:
+        Ref: ApiGatewayRestApi
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: >-
+          'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Correlation-Id,X-Request-Id,X-Requested-With,Sec-Ch-Ua,Sec-Ch-Ua-Mobile,Sec-Ch-Ua-Platform'
+        gatewayresponse.header.Access-Control-Allow-Methods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"

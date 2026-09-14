@@ -1,0 +1,14 @@
+{
+  "Parameters": {
+    "Stage": "dev",
+    "PipelineName": "workflow-service-pipeline",
+    "ArtifactBucketName": "EXISTING_CODEPIPELINE_ARTIFACT_BUCKET",
+    "ArtifactKmsKeyArn": "",
+    "ArtifactBucket": "dev-mibc-artifacts",
+    "BuildProjectName": "EXISTING_WORKFLOW_SERVICE_BUILD_PROJECT",
+    "CodestarConnectionArn": "arn:aws:codestar-connections:us-east-1:ACCOUNT_ID:connection/CONNECTION_ID",
+    "GitHubFullRepositoryId": "MyvitalRx/api-hub",
+    "GitHubBranch": "main",
+    "CodeBuildImage": "aws/codebuild/standard:7.0"
+  }
+}

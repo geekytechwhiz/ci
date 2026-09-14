@@ -1,0 +1,15 @@
+# Shared environment configuration for all services in `stg`.
+environment:
+  name: stg
+  awsRegion: ap-south-1
+
+github:
+  connectionArn: REPLACE_ME_CODECONNECTIONS_ARN
+
+artifacts:
+  pipelineBucket: REPLACE_ME_CODEPIPELINE_ARTIFACT_BUCKET
+  deploymentBucket: REPLACE_ME_DEPLOYMENT_ARTIFACT_BUCKET
+  kmsKeyArn: ""
+
+codeBuild:
+  image: aws/codebuild/standard:7.0

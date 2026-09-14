@@ -1,0 +1,22 @@
+version: 0.2
+# Reference buildspec: Smoke-Test
+
+env:
+  shell: bash
+
+phases:
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+        source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+        echo "STAGE=${STAGE:?} AWS_REGION=${AWS_REGION:?}"
+
+  build:
+    commands:
+      - "${CICD_SCRIPTS_DIR}/run-smoke-test.sh"
+
+  post_build:
+    commands:
+      - echo "Smoke test finished"

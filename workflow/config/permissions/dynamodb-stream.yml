@@ -1,0 +1,8 @@
+Effect: Allow
+Action:
+  - dynamodb:GetRecords
+  - dynamodb:GetShardIterator
+  - dynamodb:DescribeStream
+  - dynamodb:ListStreams
+Resource:
+  - '{{resolve:ssm:/${self:provider.stage}/workflow-service/STREAM_ARN}}'

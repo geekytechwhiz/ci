@@ -1,0 +1,22 @@
+version: 0.2
+# Reference buildspec: Deploy-Infra
+
+env:
+  shell: bash
+
+phases:
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+        source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+        echo "STAGE=${STAGE:?} CURRENT_COMMIT=${CURRENT_COMMIT:?}"
+
+  build:
+    commands:
+      - "${CICD_SCRIPTS_DIR}/run-deploy-infra.sh"
+
+  post_build:
+    commands:
+      - echo "Infrastructure stack deploy finished"

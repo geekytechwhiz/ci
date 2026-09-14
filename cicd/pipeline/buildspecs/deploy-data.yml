@@ -1,0 +1,44 @@
+version: 0.2
+# Reference buildspec: Deploy-Data
+# Preflight → CREATE/UPDATE via deploy-data, or prepare IMPORT recovery.
+# RECOVERY_REQUIRED exits 0 with exported recovery variables for approval.
+
+env:
+  shell: bash
+  exported-variables:
+    - DATA_ACTION
+    - DATA_REASON
+    - RECOVERY_REQUIRED
+    - RECOVERY_CHANGE_SET_NAME
+    - RECOVERY_STACK_NAME
+    - RECOVERY_TABLE_NAME
+    - RECOVERY_STAGE
+    - CURRENT_COMMIT
+
+phases:
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+        source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+        echo "STAGE=${STAGE:?} SERVICE_NAME=${SERVICE_NAME:?}"
+        echo "CURRENT_COMMIT=${CURRENT_COMMIT:?}"
+        echo "DATA_TABLE_NAME=${DATA_TABLE_NAME:?}"
+
+  build:
+    commands:
+      - "${CICD_SCRIPTS_DIR}/run-deploy-data.sh"
+
+  post_build:
+    commands:
+      - |
+        echo "DATA_ACTION=${DATA_ACTION:-}"
+        echo "RECOVERY_REQUIRED=${RECOVERY_REQUIRED:-}"
+        echo "RECOVERY_CHANGE_SET_NAME=${RECOVERY_CHANGE_SET_NAME:-}"
+
+artifacts:
+  files:
+    - '**/deployment-data-preflight.env'
+    - '**/deployment-data-recovery.env'
+  discard-paths: no

@@ -1,0 +1,31 @@
+service: workflow-service-data
+
+configValidationMode: warn
+
+frameworkVersion: '3.x'
+
+# Data-only stack.
+# Owns the POC DynamoDB table and data SSM parameters.
+# No Lambda, API Gateway, SQS, SNS, EventBridge, or application plugins.
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  stackName: ${self:provider.stage}-workflow-service-data
+  versionFunctions: false
+  deploymentBucket:
+    name: ${self:provider.stage}-mibc-workflow-service-bucket
+    serverSideEncryption: AES256
+  tags:
+    Service: workflow-service
+    Stage: ${self:provider.stage}
+    ManagedBy: serverless
+    Stack: data
+
+custom:
+  tableName: workflow-service-${self:provider.stage}
+
+resources:
+  - ${file(./resources/data.yml)}

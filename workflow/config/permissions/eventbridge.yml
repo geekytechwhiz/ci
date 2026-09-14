@@ -1,0 +1,5 @@
+Effect: Allow
+Action:
+  - events:PutEvents
+Resource:
+  - '{{resolve:ssm:/${self:provider.stage}/workflow-service/EVENT_BUS_ARN}}'

@@ -1,0 +1,150 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://api-hub.local/cicd/config-schema.json",
+  "title": "Generic CodePipeline service and environment configuration",
+  "definitions": {
+    "environment": {
+      "type": "object",
+      "required": ["environment", "github", "artifacts", "codeBuild"],
+      "properties": {
+        "environment": {
+          "type": "object",
+          "required": ["name", "awsRegion"],
+          "properties": {
+            "name": { "type": "string", "enum": ["dev", "stg", "prd"] },
+            "awsRegion": { "type": "string", "minLength": 2 }
+          },
+          "additionalProperties": false
+        },
+        "github": {
+          "type": "object",
+          "required": ["connectionArn"],
+          "properties": {
+            "connectionArn": {
+              "type": "string",
+              "pattern": "^arn:aws:(codeconnections|codestar-connections):[a-z0-9-]+:[0-9]{12}:connection/.+$|^REPLACE_ME.+$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "artifacts": {
+          "type": "object",
+          "required": ["pipelineBucket", "deploymentBucket"],
+          "properties": {
+            "pipelineBucket": { "type": "string", "minLength": 3 },
+            "deploymentBucket": { "type": "string", "minLength": 3 },
+            "kmsKeyArn": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "codeBuild": {
+          "type": "object",
+          "required": ["image"],
+          "properties": {
+            "image": { "type": "string", "minLength": 3 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "service": {
+      "type": "object",
+      "required": ["service", "source", "deployment"],
+      "properties": {
+        "service": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{1,62}$"
+            },
+            "root": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "source": {
+          "type": "object",
+          "required": ["repository", "branch", "ciPath"],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+            },
+            "branch": { "type": "string", "minLength": 1 },
+            "ciPath": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        "deployment": {
+          "type": "object",
+          "required": ["data", "infrastructure", "application"],
+          "properties": {
+            "data": { "type": "boolean" },
+            "infrastructure": { "type": "boolean" },
+            "application": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "type": { "type": "string", "enum": ["dynamodb", "none"] },
+            "logicalId": { "type": "string" },
+            "tableName": { "type": "string" },
+            "ownershipTags": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          },
+          "additionalProperties": false
+        },
+        "features": {
+          "type": "object",
+          "properties": {
+            "dynamodb": { "type": "boolean" },
+            "sqs": { "type": "boolean" },
+            "lambda": { "type": "boolean" },
+            "apiGateway": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "ssm": {
+          "type": "object",
+          "properties": {
+            "prefix": { "type": "string" },
+            "required": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          },
+          "additionalProperties": false
+        },
+        "application": {
+          "type": "object",
+          "properties": {
+            "healthCheckPath": { "type": "string" },
+            "apiBaseUrlParameter": { "type": "string" },
+            "healthResponseContains": { "type": "string" },
+            "smokeTest": { "type": "string", "enum": ["required", "optional"] },
+            "buildProjectName": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "changeDetection": {
+          "type": "object",
+          "properties": {
+            "data": { "type": "array", "items": { "type": "string" } },
+            "infrastructure": { "type": "array", "items": { "type": "string" } },
+            "application": { "type": "array", "items": { "type": "string" } },
+            "ci": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

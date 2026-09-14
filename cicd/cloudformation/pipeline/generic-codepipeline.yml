@@ -1,0 +1,2614 @@
+# Production-ready generic AWS CodePipeline V2 template
+#
+# Design principles:
+# - Service-agnostic: ServiceName, repository, CI path and optional contracts are parameters.
+# - GitHub uses an AWS CodeConnections connection authorized for the official organization.
+# - No personal GitHub account/connection is embedded in the template.
+# - Data / recovery / infra / app execution is driven by Build-exported variables.
+# - Artifact objects are commit-scoped under <ServiceName>/<commit-sha>/.
+# - Stack, SSM, IAM and resource names are derived from Stage + ServiceName.
+# - CodeBuild uses inline BuildSpecs that resolve a shared cicd framework
+#   (monorepo FrameworkPath or S3 ${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz).
+#
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Generic service CI/CD pipeline. One CodePipeline V2 (QUEUED): Source → Build →
+  Deploy-Data → Approve-Data-Recovery → Recover-Data → Deploy-Infra → Validate-SSM →
+  Deploy-App → Smoke-Test → Record-Deployment. Approve-Data-Recovery and Recover-Data
+  SKIP unless #{DataDeploymentVariables.RECOVERY_REQUIRED}=true. Data stack owns
+  DynamoDB + data SSM. Infra stack owns SQS + infra SSM. Application stack name stays
+  {stage}-${ServiceName}. Deploy as stack {stage}-${ServiceName}-cicd.
+  Deployment artifacts live in ArtifactBucket under ${ServiceName}/<commit-sha>/.
+  Deploy-Data, Deploy-Infra, Deploy-App, and Smoke-Test skip when the matching
+  BuildVariables flag is false (BeforeEntry VariableCheck, Result SKIP).
+  Validate-SSM always runs. Record-Deployment writes
+  /${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT.
+
+Parameters:
+  ServiceName:
+    Type: String
+    Description: Logical service name used to derive pipeline, role, stack, SSM, artifact and CodeBuild resource names.
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,62}$'
+
+  Stage:
+    Type: String
+    AllowedValues: [dev, stg, prd]
+    Description: Deployment stage (dev, stg, or prd).
+
+  PipelineName:
+    Type: String
+    Description: >
+      CodePipeline name. Required with no broken default — deploy script should pass
+      a derived value such as {Stage}-{ServiceName}-pipeline.
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$'
+
+  CiPath:
+    Type: String
+    Description: Path to the service CI packaging hooks directory in the source repository.
+    Default: ci
+
+  FrameworkPath:
+    Type: String
+    Description: Monorepo path to the cicd pipeline framework (scripts/). Prefer this when present in source.
+    Default: cicd/pipeline
+
+  FrameworkPrefix:
+    Type: String
+    Description: >
+      S3 prefix under ArtifactBucket for the packaged framework bundle (pipeline.tgz).
+      Deploy script should pin a content SHA (e.g. cicd-framework/<sha>).
+    Default: cicd-framework/latest
+
+  DataTableName:
+    Type: String
+    Default: ''
+    Description: Optional data table name. Leave empty to use ${ServiceName}-${Stage} at runtime.
+
+  DataLogicalId:
+    Type: String
+    Default: PrimaryTable
+    Description: CloudFormation logical ID of the primary DynamoDB table in the data stack.
+
+  ApiBaseUrlParameter:
+    Type: String
+    Default: ''
+    Description: Optional full SSM parameter path containing the service API base URL for smoke tests.
+
+  HealthCheckPath:
+    Type: String
+    Default: /health
+    Description: HTTP health endpoint used by the generic smoke test.
+
+  HealthResponseContains:
+    Type: String
+    Default: '"status": "healthy"'
+    Description: Substring that must appear in a successful health response body.
+
+  RequiredSsmParameters:
+    Type: String
+    Default: ''
+    Description: Comma-separated list of required SSM parameter leaf names under SSM_PREFIX (e.g. TABLE_NAME,TABLE_ARN).
+
+  ArtifactBucketName:
+    Type: String
+    Description: Existing CodePipeline artifact store bucket (internal pipeline artifacts). Not the deployment artifact bucket.
+
+  ArtifactKmsKeyArn:
+    Type: String
+    Default: ''
+    Description: Optional KMS key ARN if the CodePipeline artifact store uses SSE-KMS. Leave empty for AES256/S3-managed.
+
+  ArtifactBucket:
+    Type: String
+    Description: Centralized environment deployment artifact bucket (commit-scoped packages + cicd framework bundle). Required — no default.
+
+  BuildProjectName:
+    Type: String
+    Default: ''
+    Description: Existing package-only CodeBuild project name. Leave empty to create ${Stage}-${ServiceName}-build.
+
+  GitHubConnectionArn:
+    Type: String
+    Description: AWS CodeConnections ARN authorized for the official GitHub organization/repository.
+
+  GitHubFullRepositoryId:
+    Type: String
+    Description: GitHub repository in owner/repository format.
+
+  GitHubBranch:
+    Type: String
+    Description: GitHub branch to track for Source.
+
+  CodeBuildImage:
+    Type: String
+    Default: aws/codebuild/standard:7.0
+    Description: CodeBuild container image.
+
+  EnableData:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: When false, Build always exports DEPLOY_DATA=false (Deploy-Data/Recover stages skip).
+
+  EnableInfra:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: When false, Build always exports DEPLOY_INFRA=false.
+
+  EnableApp:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: When false, Build always exports DEPLOY_APP=false (Smoke-Test also skips).
+
+  EnableDynamoDb:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: When false, omit DynamoDB permissions from the CFN deploy role.
+
+  EnableSqs:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: When false, omit SQS permissions from the CFN deploy role.
+
+  EnableLambda:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: When false, omit Lambda permissions from the CFN deploy role.
+
+  EnableApiGateway:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: When false, omit API Gateway permissions from the CFN deploy role.
+
+  OwnershipTagService:
+    Type: String
+    Default: ''
+    Description: Expected DynamoDB ownership tag Service value. Empty falls back to ServiceName.
+
+  OwnershipTagPurpose:
+    Type: String
+    Default: primaryDataTable
+    Description: Expected DynamoDB ownership tag Purpose value used by data preflight/recovery.
+
+Conditions:
+  HasApiBaseUrlParameter: !Not [!Equals [!Ref ApiBaseUrlParameter, '']]
+  HasArtifactKmsKey: !Not [!Equals [!Ref ArtifactKmsKeyArn, '']]
+  HasDataTableName: !Not [!Equals [!Ref DataTableName, '']]
+  HasOwnershipTagService: !Not [!Equals [!Ref OwnershipTagService, '']]
+  HasExternalBuildProject: !Not [!Equals [!Ref BuildProjectName, '']]
+  CreateBuildProject: !Equals [!Ref BuildProjectName, '']
+  EnableDataLayer: !Equals [!Ref EnableData, 'true']
+  EnableInfraLayer: !Equals [!Ref EnableInfra, 'true']
+  EnableAppLayer: !Equals [!Ref EnableApp, 'true']
+  EnableDynamoDbFeature: !Equals [!Ref EnableDynamoDb, 'true']
+  EnableSqsFeature: !Equals [!Ref EnableSqs, 'true']
+  EnableLambdaFeature: !Equals [!Ref EnableLambda, 'true']
+  EnableApiGatewayFeature: !Equals [!Ref EnableApiGateway, 'true']
+
+Resources:
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Stage}-${ServiceName}-pipeline-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Stack
+          Value: cicd
+      Policies:
+        - PolicyName: pipeline
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ArtifactBucket
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
+              - Sid: StartCodeBuild
+                Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StopBuild
+                Resource:
+                  - !If
+                    - CreateBuildProject
+                    - !GetAtt BuildProject.Arn
+                    - !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/${BuildProjectName}'
+                  - !GetAtt DeployDataProject.Arn
+                  - !GetAtt RecoverDataProject.Arn
+                  - !GetAtt DeployInfraProject.Arn
+                  - !GetAtt DeployAppProject.Arn
+                  - !GetAtt ValidateSsmProject.Arn
+                  - !GetAtt SmokeTestProject.Arn
+                  - !GetAtt RecordDeploymentProject.Arn
+              - Sid: CloudFormationDeployActions
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStackResources
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:SetStackPolicy
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:DeleteStack
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-infra/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/${Stage}-${ServiceName}*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/${Stage}-${ServiceName}-data*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/${Stage}-${ServiceName}-infra*'
+              - Sid: ValidateTemplateUnscoped
+                Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                Resource: '*'
+              - Sid: DenyCloudFormationImport
+                Effect: Deny
+                Action: cloudformation:*
+                Resource: '*'
+                Condition:
+                  ForAnyValue:StringLike:
+                    cloudformation:ImportResourceTypes:
+                      - '*'
+              - Sid: PassCfnDeployRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CloudFormationDeployRole.Arn
+              - Sid: UseGitHubConnection
+                Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                  - codeconnections:UseConnection
+                Resource: !Ref GitHubConnectionArn
+                Condition:
+                  StringEquals:
+                    codeconnections:FullRepositoryId: !Ref GitHubFullRepositoryId
+
+  ArtifactKmsForPipeline:
+    Type: AWS::IAM::Policy
+    Condition: HasArtifactKmsKey
+    Properties:
+      PolicyName: pipeline-artifact-kms
+      Roles:
+        - !Ref PipelineRole
+        - !If [CreateBuildProject, !Ref BuildRole, !Ref AWS::NoValue]
+        - !Ref DeployDataRole
+        - !Ref DeployInfraRole
+        - !Ref DeployAppRole
+        - !Ref ValidateSsmRole
+        - !Ref SmokeTestRole
+        - !Ref RecordDeploymentRole
+        - !Ref CloudFormationDeployRole
+        - !Ref CloudFormationRecoverDataRole
+        - !Ref RecoverDataRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:GenerateDataKey
+            Resource: !Ref ArtifactKmsKeyArn
+
+  BuildRole:
+    Type: AWS::IAM::Role
+    Condition: CreateBuildProject
+    Properties:
+      RoleName: !Sub '${Stage}-${ServiceName}-build-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Stack
+          Value: cicd
+      Policies:
+        - PolicyName: build
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Sid: ReadLastDeployedCommit
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
+              - Sid: PipelineArtifactBucket
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
+              - Sid: PipelineArtifactBucketList
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketVersioning
+                  - s3:GetBucketLocation
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
+              - Sid: DeploymentArtifactObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:GetObjectTagging
+                  - s3:PutObjectTagging
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
+              - Sid: DeploymentArtifactList
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketVersioning
+                  - s3:GetBucketLocation
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
+              - Sid: DenyOverwriteProtectionHint
+                Effect: Deny
+                Action:
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
+
+  CloudFormationDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Stage}-${ServiceName}-cfn-deploy-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Stack
+          Value: cicd
+      Policies:
+        - PolicyName: cfn-deploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: EnvironmentArtifactBucketList
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                  - s3:GetBucketPolicy
+                  - s3:GetEncryptionConfiguration
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
+              - Sid: EnvironmentArtifactBucketObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
+              - Sid: PipelineArtifactTemplateList
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
+              - Sid: PipelineArtifactTemplateObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
+              - Sid: SsmContract
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:PutParameter
+                  - ssm:AddTagsToResource
+                  - ssm:DeleteParameter
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
+              - Sid: SharedSsmReads
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*'
+              - !If
+                - EnableDynamoDbFeature
+                - Sid: DynamoDbData
+                  Effect: Allow
+                  Action:
+                    - dynamodb:CreateTable
+                    - dynamodb:UpdateTable
+                    - dynamodb:DescribeTable
+                    - dynamodb:DescribeTimeToLive
+                    - dynamodb:UpdateTimeToLive
+                    - dynamodb:ListTagsOfResource
+                    - dynamodb:TagResource
+                    - dynamodb:UntagResource
+                    - dynamodb:UpdateContinuousBackups
+                    - dynamodb:DescribeContinuousBackups
+                    - dynamodb:DescribeKinesisStreamingDestination
+                  Resource:
+                    - !If
+                      - HasDataTableName
+                      - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}'
+                      - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}'
+                    - !If
+                      - HasDataTableName
+                      - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}/index/*'
+                      - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}/index/*'
+                    - !If
+                      - HasDataTableName
+                      - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}/stream/*'
+                      - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}/stream/*'
+                - !Ref AWS::NoValue
+              - !If
+                - EnableDynamoDbFeature
+                - Sid: DynamoDbListStreams
+                  Effect: Allow
+                  Action: dynamodb:ListStreams
+                  Resource: '*'
+                - !Ref AWS::NoValue
+              - !If
+                - EnableSqsFeature
+                - Sid: Sqs
+                  Effect: Allow
+                  Action:
+                    - sqs:CreateQueue
+                    - sqs:DeleteQueue
+                    - sqs:GetQueueAttributes
+                    - sqs:GetQueueUrl
+                    - sqs:SetQueueAttributes
+                    - sqs:TagQueue
+                    - sqs:UntagQueue
+                    - sqs:ListQueueTags
+                  Resource: !Sub 'arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${Stage}-${ServiceName}-*'
+                - !Ref AWS::NoValue
+              - !If
+                - EnableLambdaFeature
+                - Sid: Lambda
+                  Effect: Allow
+                  Action:
+                    - lambda:CreateFunction
+                    - lambda:UpdateFunctionCode
+                    - lambda:UpdateFunctionConfiguration
+                    - lambda:DeleteFunction
+                    - lambda:GetFunction
+                    - lambda:GetFunctionConfiguration
+                    - lambda:ListTags
+                    - lambda:TagResource
+                    - lambda:UntagResource
+                    - lambda:AddPermission
+                    - lambda:RemovePermission
+                    - lambda:GetPolicy
+                    - lambda:PublishVersion
+                    - lambda:CreateEventSourceMapping
+                    - lambda:UpdateEventSourceMapping
+                    - lambda:DeleteEventSourceMapping
+                    - lambda:GetEventSourceMapping
+                    - lambda:ListEventSourceMappings
+                  Resource: '*'
+                - !Ref AWS::NoValue
+              - !If
+                - EnableLambdaFeature
+                - Sid: IamLambdaRoles
+                  Effect: Allow
+                  Action:
+                    - iam:CreateRole
+                    - iam:GetRole
+                    - iam:DeleteRole
+                    - iam:PassRole
+                    - iam:PutRolePolicy
+                    - iam:GetRolePolicy
+                    - iam:DeleteRolePolicy
+                    - iam:AttachRolePolicy
+                    - iam:DetachRolePolicy
+                    - iam:TagRole
+                    - iam:UntagRole
+                    - iam:ListRoleTags
+                    - iam:ListAttachedRolePolicies
+                    - iam:ListRolePolicies
+                    - iam:UpdateAssumeRolePolicy
+                  Resource:
+                    - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${Stage}-${ServiceName}*'
+                    - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ServiceName}*'
+                - !Ref AWS::NoValue
+              - !If
+                - EnableApiGatewayFeature
+                - Sid: ApiGateway
+                  Effect: Allow
+                  Action:
+                    - apigateway:*
+                  Resource: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}::*'
+                - !Ref AWS::NoValue
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DescribeLogGroups
+                  - logs:TagResource
+                  - logs:UntagResource
+                  - logs:ListTagsForResource
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+
+  CloudFormationRecoverDataRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Stage}-${ServiceName}-cfn-recover-data-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Stack
+          Value: cicd
+        - Key: Purpose
+          Value: DataRecovery
+      Policies:
+        - PolicyName: cfn-recover-data
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadDataPackagedTemplate
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*/data/packaged.yaml'
+              - Sid: ImportExistingDataTable
+                Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:DescribeContinuousBackups
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:DescribeKinesisStreamingDestination
+                  - dynamodb:ListTagsOfResource
+                  - dynamodb:TagResource
+                  - dynamodb:UpdateTable
+                  - dynamodb:UpdateTimeToLive
+                  - dynamodb:UpdateContinuousBackups
+                Resource:
+                  - !If
+                    - HasDataTableName
+                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}'
+                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}'
+                  - !If
+                    - HasDataTableName
+                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}/index/*'
+                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}/index/*'
+                  - !If
+                    - HasDataTableName
+                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}/stream/*'
+                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}/stream/*'
+              - Sid: ListStreamsForImport
+                Effect: Allow
+                Action: dynamodb:ListStreams
+                Resource: '*'
+              - Sid: RestoreDataSsmAfterImport
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:PutParameter
+                  - ssm:AddTagsToResource
+                  - ssm:DeleteParameter
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/TABLE_NAME'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/TABLE_ARN'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/STREAM_ARN'
+              - Sid: DenyDeleteTable
+                Effect: Deny
+                Action: dynamodb:DeleteTable
+                Resource: '*'
+              - Sid: DenyS3ObjectDelete
+                Effect: Deny
+                Action:
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource: '*'
+              - Sid: DenyUnrestrictedIamChanges
+                Effect: Deny
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:CreateUser
+                  - iam:DeleteUser
+                  - iam:CreateAccessKey
+                  - iam:PutUserPolicy
+                  - iam:AttachUserPolicy
+                  - iam:CreatePolicy
+                  - iam:CreatePolicyVersion
+                  - iam:PassRole
+                Resource: '*'
+
+  DeployDataRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Stage}-${ServiceName}-deploy-data-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Stack
+          Value: cicd
+      Policies:
+        - PolicyName: deploy-data
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Sid: CloudFormationDataStack
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStackResources
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:SetStackPolicy
+                  - cloudformation:ValidateTemplate
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*'
+              - Sid: DescribeAndValidateUnscoped
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:ListChangeSets
+                Resource: '*'
+              - Sid: PassCfnDeployRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CloudFormationDeployRole.Arn
+              - Sid: DescribeTableForPreflight
+                Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:DescribeContinuousBackups
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:ListTagsOfResource
+                Resource: !If
+                  - HasDataTableName
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}'
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}'
+              - Sid: ReadDataSsmForRecoveryValidation
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
+              - Sid: ReadFrameworkAndArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
+              - Sid: ListArtifactBuckets
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketVersioning
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
+              - Sid: PutCfnTemplateUpload
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
+              - Sid: DenyCloudFormationImport
+                Effect: Deny
+                Action: cloudformation:*
+                Resource: '*'
+                Condition:
+                  ForAnyValue:StringLike:
+                    cloudformation:ImportResourceTypes:
+                      - '*'
+              - Sid: AssumeRecoverDataRole
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !GetAtt RecoverDataRole.Arn
+
+  DeployInfraRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Stage}-${ServiceName}-deploy-infra-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Stack
+          Value: cicd
+      Policies:
+        - PolicyName: deploy-infra
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Sid: CloudFormationInfraStack
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStackResources
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:SetStackPolicy
+                  - cloudformation:ValidateTemplate
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-infra/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-infra'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*'
+              - Sid: DescribeAndValidateUnscoped
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ValidateTemplate
+                Resource: '*'
+              - Sid: PassCfnDeployRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CloudFormationDeployRole.Arn
+              - Sid: ReadInfraArtifact
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
+              - Sid: ListArtifactBuckets
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketVersioning
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
+              - Sid: PutCfnTemplateUpload
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
+              - Sid: DenyCloudFormationImport
+                Effect: Deny
+                Action: cloudformation:*
+                Resource: '*'
+                Condition:
+                  ForAnyValue:StringLike:
+                    cloudformation:ImportResourceTypes:
+                      - '*'
+
+  DeployAppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Stage}-${ServiceName}-deploy-app-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Stack
+          Value: cicd
+      Policies:
+        - PolicyName: deploy-app
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Sid: CloudFormationAppStack
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:ListStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:SetStackPolicy
+                  - cloudformation:ValidateTemplate
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*'
+              - Sid: DescribeAndValidateUnscoped
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:ListStackResources
+                Resource: '*'
+              - Sid: PassCfnDeployRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CloudFormationDeployRole.Arn
+              - Sid: ReadAppArtifact
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
+              - Sid: ListArtifactBuckets
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketVersioning
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
+              - Sid: PutCfnTemplateUpload
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
+              - Sid: DenyCloudFormationImport
+                Effect: Deny
+                Action: cloudformation:*
+                Resource: '*'
+                Condition:
+                  ForAnyValue:StringLike:
+                    cloudformation:ImportResourceTypes:
+                      - '*'
+
+  RecoverDataRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Stage}-${ServiceName}-recover-data-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${Stage}-${ServiceName}-deploy-data-role'
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Stack
+          Value: cicd
+        - Key: Purpose
+          Value: DataRecovery
+      Policies:
+        - PolicyName: recover-data
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Sid: DescribeDataStackAndChangeSet
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeChangeSet
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*'
+              - Sid: DescribeStacksAndChangeSetUnscoped
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:DescribeStackResource
+                Resource: '*'
+              - Sid: ImportDynamoDbTableOnly
+                Effect: Allow
+                Action: cloudformation:CreateChangeSet
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*'
+                Condition:
+                  StringEquals:
+                    cloudformation:ChangeSetType: IMPORT
+                  ForAllValues:StringEqualsIgnoreCase:
+                    cloudformation:ImportResourceTypes:
+                      - AWS::DynamoDB::Table
+                  Null:
+                    cloudformation:ImportResourceTypes: 'false'
+              - Sid: UpdateDataStackAfterImport
+                Effect: Allow
+                Action: cloudformation:CreateChangeSet
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*'
+                Condition:
+                  StringEquals:
+                    cloudformation:ChangeSetType: UPDATE
+              - Sid: ExecuteAndDiscardDataRecoveryChangeSet
+                Effect: Allow
+                Action:
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*'
+              - Sid: DenyUnrelatedCloudFormationImport
+                Effect: Deny
+                Action: cloudformation:CreateChangeSet
+                Resource: '*'
+                Condition:
+                  ForAnyValue:StringNotEqualsIgnoreCase:
+                    cloudformation:ImportResourceTypes:
+                      - AWS::DynamoDB::Table
+              - Sid: PassCfnRecoverDataRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CloudFormationRecoverDataRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: cloudformation.amazonaws.com
+              - Sid: DescribeTableForRecovery
+                Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:DescribeContinuousBackups
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:DescribeKinesisStreamingDestination
+                  - dynamodb:ListTagsOfResource
+                Resource:
+                  - !If
+                    - HasDataTableName
+                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}'
+                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}'
+                  - !If
+                    - HasDataTableName
+                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}/index/*'
+                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}/index/*'
+                  - !If
+                    - HasDataTableName
+                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}/stream/*'
+                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}/stream/*'
+              - Sid: ReadDataSsmAfterImport
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/TABLE_NAME'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/TABLE_ARN'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/STREAM_ARN'
+              - Sid: ReadDataPackagedTemplate
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*/data/packaged.yaml'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
+              - Sid: ReadPipelineInputArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
+              - Sid: ListPipelineArtifactBucket
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
+              - Sid: DenyDeleteTable
+                Effect: Deny
+                Action: dynamodb:DeleteTable
+                Resource: '*'
+              - Sid: DenyS3ObjectDelete
+                Effect: Deny
+                Action:
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource: '*'
+              - Sid: DenyUnrestrictedIamChanges
+                Effect: Deny
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:CreateUser
+                  - iam:DeleteUser
+                  - iam:CreateAccessKey
+                  - iam:PutUserPolicy
+                  - iam:AttachUserPolicy
+                  - iam:CreatePolicy
+                  - iam:CreatePolicyVersion
+                Resource: '*'
+
+  ValidateSsmRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Stage}-${ServiceName}-validate-ssm-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Stack
+          Value: cicd
+      Policies:
+        - PolicyName: validate-ssm
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
+
+  SmokeTestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Stage}-${ServiceName}-smoke-test-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Stack
+          Value: cicd
+      Policies:
+        - PolicyName: smoke-test
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Sid: ReadApiBaseUrl
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: !If
+                  - HasApiBaseUrlParameter
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ApiBaseUrlParameter}'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
+              - Sid: ServiceEndpointOutput
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
+
+  RecordDeploymentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Stage}-${ServiceName}-record-deployment-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Stack
+          Value: cicd
+      Policies:
+        - PolicyName: record-deployment
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Sid: WriteCicdLastDeployedCommit
+                Effect: Allow
+                Action: ssm:PutParameter
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
+
+
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Condition: CreateBuildProject
+    Properties:
+      Name: !Sub '${Stage}-${ServiceName}-build'
+      Description: Package service artifacts, detect deployment changes, publish immutable commit-scoped packages, export DEPLOY_* flags.
+      ServiceRole: !GetAtt BuildRole.Arn
+      TimeoutInMinutes: 60
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+            exported-variables:
+              - DEPLOY_DATA
+              - DEPLOY_INFRA
+              - DEPLOY_APP
+              - CURRENT_COMMIT
+          phases:
+            install:
+              commands:
+        - |
+          set -euo pipefail
+          if [ -d "${FrameworkPath}" ]; then
+            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+          else
+            mkdir -p /tmp/cicd-framework
+            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+          fi
+          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+            build:
+              commands:
+                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-build.sh"
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: !Ref CodeBuildImage
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: STAGE
+            Type: PLAINTEXT
+            Value: !Ref Stage
+          - Name: SERVICE_NAME
+            Type: PLAINTEXT
+            Value: !Ref ServiceName
+          - Name: AWS_REGION
+            Type: PLAINTEXT
+            Value: !Ref AWS::Region
+          - Name: ARTIFACT_BUCKET
+            Type: PLAINTEXT
+            Value: !Ref ArtifactBucket
+          - Name: CI_PATH
+            Type: PLAINTEXT
+            Value: !Ref CiPath
+          - Name: FRAMEWORK_PATH
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPath
+          - Name: FRAMEWORK_PREFIX
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPrefix
+          - Name: SSM_PREFIX
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}'
+          - Name: LAST_DEPLOYED_COMMIT_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
+          - Name: REQUIRED_SSM_PARAMETERS
+            Type: PLAINTEXT
+            Value: !Ref RequiredSsmParameters
+          - Name: DATA_LOGICAL_ID
+            Type: PLAINTEXT
+            Value: !Ref DataLogicalId
+          - Name: DATA_TABLE_NAME
+            Type: PLAINTEXT
+            Value: !Ref DataTableName
+          - Name: OWNERSHIP_TAG_SERVICE
+            Type: PLAINTEXT
+            Value: !If
+              - HasOwnershipTagService
+              - !Ref OwnershipTagService
+              - !Ref ServiceName
+          - Name: OWNERSHIP_TAG_PURPOSE
+            Type: PLAINTEXT
+            Value: !Ref OwnershipTagPurpose
+          - Name: ENABLE_DATA
+            Type: PLAINTEXT
+            Value: !Ref EnableData
+          - Name: ENABLE_INFRA
+            Type: PLAINTEXT
+            Value: !Ref EnableInfra
+          - Name: ENABLE_APP
+            Type: PLAINTEXT
+            Value: !Ref EnableApp
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+
+  DeployDataProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${Stage}-${ServiceName}-deploy-data'
+      Description: Preflight then create, update, or prepare IMPORT recovery of the Data Stack. STOP fails this stage. RECOVERY_REQUIRED prepares a change set and succeeds so approval can run. Does not execute IMPORT or modify DynamoDB table data.
+      ServiceRole: !GetAtt DeployDataRole.Arn
+      TimeoutInMinutes: 30
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+            exported-variables:
+              - DATA_ACTION
+              - DATA_REASON
+              - RECOVERY_REQUIRED
+              - RECOVERY_CHANGE_SET_NAME
+              - RECOVERY_STACK_NAME
+              - RECOVERY_TABLE_NAME
+              - RECOVERY_STAGE
+              - CURRENT_COMMIT
+          phases:
+            install:
+              commands:
+        - |
+          set -euo pipefail
+          if [ -d "${FrameworkPath}" ]; then
+            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+          else
+            mkdir -p /tmp/cicd-framework
+            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+          fi
+          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+            build:
+              commands:
+                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-deploy-data.sh"
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Ref CodeBuildImage
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: STAGE
+            Type: PLAINTEXT
+            Value: !Ref Stage
+          - Name: SERVICE_NAME
+            Type: PLAINTEXT
+            Value: !Ref ServiceName
+          - Name: AWS_REGION
+            Type: PLAINTEXT
+            Value: !Ref AWS::Region
+          - Name: ARTIFACT_BUCKET
+            Type: PLAINTEXT
+            Value: !Ref ArtifactBucket
+          - Name: CI_PATH
+            Type: PLAINTEXT
+            Value: !Ref CiPath
+          - Name: FRAMEWORK_PATH
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPath
+          - Name: FRAMEWORK_PREFIX
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPrefix
+          - Name: SSM_PREFIX
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}'
+          - Name: LAST_DEPLOYED_COMMIT_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
+          - Name: REQUIRED_SSM_PARAMETERS
+            Type: PLAINTEXT
+            Value: !Ref RequiredSsmParameters
+          - Name: DATA_LOGICAL_ID
+            Type: PLAINTEXT
+            Value: !Ref DataLogicalId
+          - Name: DATA_TABLE_NAME
+            Type: PLAINTEXT
+            Value: !Ref DataTableName
+          - Name: OWNERSHIP_TAG_SERVICE
+            Type: PLAINTEXT
+            Value: !If
+              - HasOwnershipTagService
+              - !Ref OwnershipTagService
+              - !Ref ServiceName
+          - Name: OWNERSHIP_TAG_PURPOSE
+            Type: PLAINTEXT
+            Value: !Ref OwnershipTagPurpose
+          - Name: ENABLE_DATA
+            Type: PLAINTEXT
+            Value: !Ref EnableData
+          - Name: ENABLE_INFRA
+            Type: PLAINTEXT
+            Value: !Ref EnableInfra
+          - Name: ENABLE_APP
+            Type: PLAINTEXT
+            Value: !Ref EnableApp
+          - Name: DATA_STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}-data'
+          - Name: API_BASE_URL_PARAMETER
+            Type: PLAINTEXT
+            Value: !Ref ApiBaseUrlParameter
+          - Name: HEALTH_CHECK_PATH
+            Type: PLAINTEXT
+            Value: !Ref HealthCheckPath
+          - Name: CFN_DEPLOY_ROLE_ARN
+            Type: PLAINTEXT
+            Value: !GetAtt CloudFormationDeployRole.Arn
+          - Name: CFN_RECOVER_ROLE_ARN
+            Type: PLAINTEXT
+            Value: !GetAtt CloudFormationRecoverDataRole.Arn
+          - Name: RECOVER_DATA_ROLE_ARN
+            Type: PLAINTEXT
+            Value: !GetAtt RecoverDataRole.Arn
+          - Name: DATA_PREFLIGHT_ENV
+            Type: PLAINTEXT
+            Value: deployment-data-preflight.env
+          - Name: DATA_RECOVERY_ENV
+            Type: PLAINTEXT
+            Value: deployment-data-recovery.env
+          - Name: DATA_RECOVERY_PHASE
+            Type: PLAINTEXT
+            Value: prepare
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+
+  RecoverDataProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${Stage}-${ServiceName}-recover-data'
+      Description: After manual approval, execute the prepared Data IMPORT change set and restore the Data SSM contract. Does not delete or recreate DynamoDB.
+      ServiceRole: !GetAtt RecoverDataRole.Arn
+      TimeoutInMinutes: 30
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+            exported-variables:
+              - RECOVERY_SUCCESS
+              - DATA_ACTION
+              - CURRENT_COMMIT
+          phases:
+            install:
+              commands:
+        - |
+          set -euo pipefail
+          if [ -d "${FrameworkPath}" ]; then
+            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+          else
+            mkdir -p /tmp/cicd-framework
+            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+          fi
+          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+            build:
+              commands:
+                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-recover-data.sh"
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Ref CodeBuildImage
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: STAGE
+            Type: PLAINTEXT
+            Value: !Ref Stage
+          - Name: SERVICE_NAME
+            Type: PLAINTEXT
+            Value: !Ref ServiceName
+          - Name: AWS_REGION
+            Type: PLAINTEXT
+            Value: !Ref AWS::Region
+          - Name: ARTIFACT_BUCKET
+            Type: PLAINTEXT
+            Value: !Ref ArtifactBucket
+          - Name: CI_PATH
+            Type: PLAINTEXT
+            Value: !Ref CiPath
+          - Name: FRAMEWORK_PATH
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPath
+          - Name: FRAMEWORK_PREFIX
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPrefix
+          - Name: SSM_PREFIX
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}'
+          - Name: LAST_DEPLOYED_COMMIT_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
+          - Name: REQUIRED_SSM_PARAMETERS
+            Type: PLAINTEXT
+            Value: !Ref RequiredSsmParameters
+          - Name: DATA_LOGICAL_ID
+            Type: PLAINTEXT
+            Value: !Ref DataLogicalId
+          - Name: DATA_TABLE_NAME
+            Type: PLAINTEXT
+            Value: !Ref DataTableName
+          - Name: OWNERSHIP_TAG_SERVICE
+            Type: PLAINTEXT
+            Value: !If
+              - HasOwnershipTagService
+              - !Ref OwnershipTagService
+              - !Ref ServiceName
+          - Name: OWNERSHIP_TAG_PURPOSE
+            Type: PLAINTEXT
+            Value: !Ref OwnershipTagPurpose
+          - Name: ENABLE_DATA
+            Type: PLAINTEXT
+            Value: !Ref EnableData
+          - Name: ENABLE_INFRA
+            Type: PLAINTEXT
+            Value: !Ref EnableInfra
+          - Name: ENABLE_APP
+            Type: PLAINTEXT
+            Value: !Ref EnableApp
+          - Name: DATA_STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}-data'
+          - Name: CFN_RECOVER_ROLE_ARN
+            Type: PLAINTEXT
+            Value: !GetAtt CloudFormationRecoverDataRole.Arn
+          - Name: DATA_PREFLIGHT_ENV
+            Type: PLAINTEXT
+            Value: deployment-data-preflight.env
+          - Name: DATA_RECOVERY_ENV
+            Type: PLAINTEXT
+            Value: deployment-data-recovery.env
+          - Name: DATA_RECOVERY_RESULT_ENV
+            Type: PLAINTEXT
+            Value: deployment-data-recovery-result.env
+          - Name: DATA_RECOVERY_PHASE
+            Type: PLAINTEXT
+            Value: execute
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+
+  DeployInfraProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${Stage}-${ServiceName}-deploy-infra'
+      Description: Deploy Infrastructure Stack from the immutable commit-scoped artifact. Does not re-package.
+      ServiceRole: !GetAtt DeployInfraRole.Arn
+      TimeoutInMinutes: 30
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+          phases:
+            install:
+              commands:
+        - |
+          set -euo pipefail
+          if [ -d "${FrameworkPath}" ]; then
+            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+          else
+            mkdir -p /tmp/cicd-framework
+            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+          fi
+          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+            build:
+              commands:
+                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-deploy-infra.sh"
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Ref CodeBuildImage
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: STAGE
+            Type: PLAINTEXT
+            Value: !Ref Stage
+          - Name: SERVICE_NAME
+            Type: PLAINTEXT
+            Value: !Ref ServiceName
+          - Name: AWS_REGION
+            Type: PLAINTEXT
+            Value: !Ref AWS::Region
+          - Name: ARTIFACT_BUCKET
+            Type: PLAINTEXT
+            Value: !Ref ArtifactBucket
+          - Name: CI_PATH
+            Type: PLAINTEXT
+            Value: !Ref CiPath
+          - Name: FRAMEWORK_PATH
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPath
+          - Name: FRAMEWORK_PREFIX
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPrefix
+          - Name: SSM_PREFIX
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}'
+          - Name: LAST_DEPLOYED_COMMIT_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
+          - Name: REQUIRED_SSM_PARAMETERS
+            Type: PLAINTEXT
+            Value: !Ref RequiredSsmParameters
+          - Name: DATA_LOGICAL_ID
+            Type: PLAINTEXT
+            Value: !Ref DataLogicalId
+          - Name: DATA_TABLE_NAME
+            Type: PLAINTEXT
+            Value: !Ref DataTableName
+          - Name: OWNERSHIP_TAG_SERVICE
+            Type: PLAINTEXT
+            Value: !If
+              - HasOwnershipTagService
+              - !Ref OwnershipTagService
+              - !Ref ServiceName
+          - Name: OWNERSHIP_TAG_PURPOSE
+            Type: PLAINTEXT
+            Value: !Ref OwnershipTagPurpose
+          - Name: ENABLE_DATA
+            Type: PLAINTEXT
+            Value: !Ref EnableData
+          - Name: ENABLE_INFRA
+            Type: PLAINTEXT
+            Value: !Ref EnableInfra
+          - Name: ENABLE_APP
+            Type: PLAINTEXT
+            Value: !Ref EnableApp
+          - Name: INFRA_STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}-infra'
+          - Name: CFN_DEPLOY_ROLE_ARN
+            Type: PLAINTEXT
+            Value: !GetAtt CloudFormationDeployRole.Arn
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+
+  DeployAppProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${Stage}-${ServiceName}-deploy-app'
+      Description: Deploy Application Stack from the immutable commit-scoped artifact. Does not run serverless package/deploy.
+      ServiceRole: !GetAtt DeployAppRole.Arn
+      TimeoutInMinutes: 30
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+          phases:
+            install:
+              commands:
+        - |
+          set -euo pipefail
+          if [ -d "${FrameworkPath}" ]; then
+            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+          else
+            mkdir -p /tmp/cicd-framework
+            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+          fi
+          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+            build:
+              commands:
+                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-deploy-app.sh"
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Ref CodeBuildImage
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: STAGE
+            Type: PLAINTEXT
+            Value: !Ref Stage
+          - Name: SERVICE_NAME
+            Type: PLAINTEXT
+            Value: !Ref ServiceName
+          - Name: AWS_REGION
+            Type: PLAINTEXT
+            Value: !Ref AWS::Region
+          - Name: ARTIFACT_BUCKET
+            Type: PLAINTEXT
+            Value: !Ref ArtifactBucket
+          - Name: CI_PATH
+            Type: PLAINTEXT
+            Value: !Ref CiPath
+          - Name: FRAMEWORK_PATH
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPath
+          - Name: FRAMEWORK_PREFIX
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPrefix
+          - Name: SSM_PREFIX
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}'
+          - Name: LAST_DEPLOYED_COMMIT_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
+          - Name: REQUIRED_SSM_PARAMETERS
+            Type: PLAINTEXT
+            Value: !Ref RequiredSsmParameters
+          - Name: DATA_LOGICAL_ID
+            Type: PLAINTEXT
+            Value: !Ref DataLogicalId
+          - Name: DATA_TABLE_NAME
+            Type: PLAINTEXT
+            Value: !Ref DataTableName
+          - Name: OWNERSHIP_TAG_SERVICE
+            Type: PLAINTEXT
+            Value: !If
+              - HasOwnershipTagService
+              - !Ref OwnershipTagService
+              - !Ref ServiceName
+          - Name: OWNERSHIP_TAG_PURPOSE
+            Type: PLAINTEXT
+            Value: !Ref OwnershipTagPurpose
+          - Name: ENABLE_DATA
+            Type: PLAINTEXT
+            Value: !Ref EnableData
+          - Name: ENABLE_INFRA
+            Type: PLAINTEXT
+            Value: !Ref EnableInfra
+          - Name: ENABLE_APP
+            Type: PLAINTEXT
+            Value: !Ref EnableApp
+          - Name: STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}'
+          - Name: CFN_DEPLOY_ROLE_ARN
+            Type: PLAINTEXT
+            Value: !GetAtt CloudFormationDeployRole.Arn
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+
+  ValidateSsmProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${Stage}-${ServiceName}-validate-ssm'
+      Description: Validate Data and Infrastructure SSM contracts after both stacks deploy. Does not deploy.
+      ServiceRole: !GetAtt ValidateSsmRole.Arn
+      TimeoutInMinutes: 10
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+          phases:
+            install:
+              commands:
+        - |
+          set -euo pipefail
+          if [ -d "${FrameworkPath}" ]; then
+            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+          else
+            mkdir -p /tmp/cicd-framework
+            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+          fi
+          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+            build:
+              commands:
+                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-validate-ssm.sh"
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Ref CodeBuildImage
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: STAGE
+            Type: PLAINTEXT
+            Value: !Ref Stage
+          - Name: SERVICE_NAME
+            Type: PLAINTEXT
+            Value: !Ref ServiceName
+          - Name: AWS_REGION
+            Type: PLAINTEXT
+            Value: !Ref AWS::Region
+          - Name: ARTIFACT_BUCKET
+            Type: PLAINTEXT
+            Value: !Ref ArtifactBucket
+          - Name: CI_PATH
+            Type: PLAINTEXT
+            Value: !Ref CiPath
+          - Name: FRAMEWORK_PATH
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPath
+          - Name: FRAMEWORK_PREFIX
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPrefix
+          - Name: SSM_PREFIX
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}'
+          - Name: LAST_DEPLOYED_COMMIT_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
+          - Name: REQUIRED_SSM_PARAMETERS
+            Type: PLAINTEXT
+            Value: !Ref RequiredSsmParameters
+          - Name: DATA_LOGICAL_ID
+            Type: PLAINTEXT
+            Value: !Ref DataLogicalId
+          - Name: DATA_TABLE_NAME
+            Type: PLAINTEXT
+            Value: !Ref DataTableName
+          - Name: OWNERSHIP_TAG_SERVICE
+            Type: PLAINTEXT
+            Value: !If
+              - HasOwnershipTagService
+              - !Ref OwnershipTagService
+              - !Ref ServiceName
+          - Name: OWNERSHIP_TAG_PURPOSE
+            Type: PLAINTEXT
+            Value: !Ref OwnershipTagPurpose
+          - Name: ENABLE_DATA
+            Type: PLAINTEXT
+            Value: !Ref EnableData
+          - Name: ENABLE_INFRA
+            Type: PLAINTEXT
+            Value: !Ref EnableInfra
+          - Name: ENABLE_APP
+            Type: PLAINTEXT
+            Value: !Ref EnableApp
+          - Name: STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}'
+          - Name: INFRA_STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}-infra'
+          - Name: DATA_STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}-data'
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+
+  SmokeTestProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${Stage}-${ServiceName}-smoke-test'
+      Description: HTTP health check after application deploy. Does not deploy or delete stacks.
+      ServiceRole: !GetAtt SmokeTestRole.Arn
+      TimeoutInMinutes: 10
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+          phases:
+            install:
+              commands:
+        - |
+          set -euo pipefail
+          if [ -d "${FrameworkPath}" ]; then
+            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+          else
+            mkdir -p /tmp/cicd-framework
+            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+          fi
+          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+            build:
+              commands:
+                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-smoke-test.sh"
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Ref CodeBuildImage
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: STAGE
+            Type: PLAINTEXT
+            Value: !Ref Stage
+          - Name: SERVICE_NAME
+            Type: PLAINTEXT
+            Value: !Ref ServiceName
+          - Name: AWS_REGION
+            Type: PLAINTEXT
+            Value: !Ref AWS::Region
+          - Name: ARTIFACT_BUCKET
+            Type: PLAINTEXT
+            Value: !Ref ArtifactBucket
+          - Name: CI_PATH
+            Type: PLAINTEXT
+            Value: !Ref CiPath
+          - Name: FRAMEWORK_PATH
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPath
+          - Name: FRAMEWORK_PREFIX
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPrefix
+          - Name: SSM_PREFIX
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}'
+          - Name: LAST_DEPLOYED_COMMIT_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
+          - Name: REQUIRED_SSM_PARAMETERS
+            Type: PLAINTEXT
+            Value: !Ref RequiredSsmParameters
+          - Name: DATA_LOGICAL_ID
+            Type: PLAINTEXT
+            Value: !Ref DataLogicalId
+          - Name: DATA_TABLE_NAME
+            Type: PLAINTEXT
+            Value: !Ref DataTableName
+          - Name: OWNERSHIP_TAG_SERVICE
+            Type: PLAINTEXT
+            Value: !If
+              - HasOwnershipTagService
+              - !Ref OwnershipTagService
+              - !Ref ServiceName
+          - Name: OWNERSHIP_TAG_PURPOSE
+            Type: PLAINTEXT
+            Value: !Ref OwnershipTagPurpose
+          - Name: ENABLE_DATA
+            Type: PLAINTEXT
+            Value: !Ref EnableData
+          - Name: ENABLE_INFRA
+            Type: PLAINTEXT
+            Value: !Ref EnableInfra
+          - Name: ENABLE_APP
+            Type: PLAINTEXT
+            Value: !Ref EnableApp
+          - Name: STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}'
+          - Name: INFRA_STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}-infra'
+          - Name: DATA_STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}-data'
+          - Name: API_BASE_URL_PARAMETER
+            Type: PLAINTEXT
+            Value: !Ref ApiBaseUrlParameter
+          - Name: HEALTH_CHECK_PATH
+            Type: PLAINTEXT
+            Value: !Ref HealthCheckPath
+          - Name: HEALTH_RESPONSE_CONTAINS
+            Type: PLAINTEXT
+            Value: !Ref HealthResponseContains
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+
+  RecordDeploymentProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${Stage}-${ServiceName}-record-deployment'
+      Description: Record the current source commit as LAST_DEPLOYED_COMMIT after a successful pipeline. Does not deploy.
+      ServiceRole: !GetAtt RecordDeploymentRole.Arn
+      TimeoutInMinutes: 10
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+          phases:
+            install:
+              commands:
+        - |
+          set -euo pipefail
+          if [ -d "${FrameworkPath}" ]; then
+            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+          else
+            mkdir -p /tmp/cicd-framework
+            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+          fi
+          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+            build:
+              commands:
+                - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-record-deployment.sh"
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Ref CodeBuildImage
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: STAGE
+            Type: PLAINTEXT
+            Value: !Ref Stage
+          - Name: SERVICE_NAME
+            Type: PLAINTEXT
+            Value: !Ref ServiceName
+          - Name: AWS_REGION
+            Type: PLAINTEXT
+            Value: !Ref AWS::Region
+          - Name: ARTIFACT_BUCKET
+            Type: PLAINTEXT
+            Value: !Ref ArtifactBucket
+          - Name: CI_PATH
+            Type: PLAINTEXT
+            Value: !Ref CiPath
+          - Name: FRAMEWORK_PATH
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPath
+          - Name: FRAMEWORK_PREFIX
+            Type: PLAINTEXT
+            Value: !Ref FrameworkPrefix
+          - Name: SSM_PREFIX
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}'
+          - Name: LAST_DEPLOYED_COMMIT_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
+          - Name: REQUIRED_SSM_PARAMETERS
+            Type: PLAINTEXT
+            Value: !Ref RequiredSsmParameters
+          - Name: DATA_LOGICAL_ID
+            Type: PLAINTEXT
+            Value: !Ref DataLogicalId
+          - Name: DATA_TABLE_NAME
+            Type: PLAINTEXT
+            Value: !Ref DataTableName
+          - Name: OWNERSHIP_TAG_SERVICE
+            Type: PLAINTEXT
+            Value: !If
+              - HasOwnershipTagService
+              - !Ref OwnershipTagService
+              - !Ref ServiceName
+          - Name: OWNERSHIP_TAG_PURPOSE
+            Type: PLAINTEXT
+            Value: !Ref OwnershipTagPurpose
+          - Name: ENABLE_DATA
+            Type: PLAINTEXT
+            Value: !Ref EnableData
+          - Name: ENABLE_INFRA
+            Type: PLAINTEXT
+            Value: !Ref EnableInfra
+          - Name: ENABLE_APP
+            Type: PLAINTEXT
+            Value: !Ref EnableApp
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+
+
+  ServicePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Ref PipelineName
+      PipelineType: V2
+      ExecutionMode: QUEUED
+      RestartExecutionOnUpdate: false
+      RoleArn: !GetAtt PipelineRole.Arn
+      Variables:
+        - Name: ArtifactBucket
+          DefaultValue: !Ref ArtifactBucket
+          Description: Centralized environment artifact bucket. CodeBuild receives ARTIFACT_BUCKET=#{variables.ArtifactBucket}.
+      ArtifactStore: !If
+        - HasArtifactKmsKey
+        - Type: S3
+          Location: !Ref ArtifactBucketName
+          EncryptionKey:
+            Id: !Ref ArtifactKmsKeyArn
+            Type: KMS
+        - Type: S3
+          Location: !Ref ArtifactBucketName
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              RunOrder: 1
+              OutputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ConnectionArn: !Ref GitHubConnectionArn
+                FullRepositoryId: !Ref GitHubFullRepositoryId
+                BranchName: !Ref GitHubBranch
+                DetectChanges: 'true'
+                OutputArtifactFormat: CODE_ZIP
+
+        - Name: Build
+          Actions:
+            - Name: Build
+              Namespace: BuildVariables
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ProjectName: !If
+                  - CreateBuildProject
+                  - !Ref BuildProject
+                  - !Ref BuildProjectName
+                PrimarySource: SourceArtifact
+                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"SERVICE_NAME","value":"${ServiceName}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ARTIFACT_BUCKET","value":"#{variables.ArtifactBucket}","type":"PLAINTEXT"},{"name":"ENABLE_DATA","value":"${EnableData}","type":"PLAINTEXT"},{"name":"ENABLE_INFRA","value":"${EnableInfra}","type":"PLAINTEXT"},{"name":"ENABLE_APP","value":"${EnableApp}","type":"PLAINTEXT"},{"name":"CI_PATH","value":"${CiPath}","type":"PLAINTEXT"},{"name":"LAST_DEPLOYED_COMMIT_PARAM","value":"/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT","type":"PLAINTEXT"}]'
+              # Namespace BuildVariables exposes DEPLOY_DATA / DEPLOY_INFRA /
+              # DEPLOY_APP / CURRENT_COMMIT from CodeBuild exported-variables.
+              # Later stages consume #{BuildVariables.DEPLOY_*} via BeforeEntry
+              # VariableCheck (Result SKIP) and #{BuildVariables.CURRENT_COMMIT}
+              # for artifact fetch and Record-Deployment.
+
+        - Name: Deploy-Data
+          BeforeEntry:
+            Conditions:
+              - Result: SKIP
+                Rules:
+                  - Name: DeployDataVariableCheck
+                    RuleTypeId:
+                      Category: Rule
+                      Owner: AWS
+                      Provider: VariableCheck
+                      Version: '1'
+                    Configuration:
+                      Operator: EQ
+                      Value: 'true'
+                      Variable: '#{BuildVariables.DEPLOY_DATA}'
+          Actions:
+            - Name: DeployData
+              Namespace: DataDeploymentVariables
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              InputArtifacts:
+                - Name: BuildArtifact
+              OutputArtifacts:
+                - Name: DataPreflightArtifact
+              Configuration:
+                ProjectName: !Ref DeployDataProject
+                PrimarySource: BuildArtifact
+                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ARTIFACT_BUCKET","value":"#{variables.ArtifactBucket}","type":"PLAINTEXT"},{"name":"CURRENT_COMMIT","value":"#{BuildVariables.CURRENT_COMMIT}","type":"PLAINTEXT"}]'
+              # Namespace DataDeploymentVariables exposes DATA_ACTION /
+              # DATA_REASON / RECOVERY_REQUIRED / RECOVERY_CHANGE_SET_NAME /
+              # RECOVERY_STACK_NAME / RECOVERY_TABLE_NAME / RECOVERY_STAGE /
+              # CURRENT_COMMIT from CodeBuild exported-variables.
+              # Approve-Data-Recovery and Recover-Data BeforeEntry VariableCheck
+              # encodes #{DataDeploymentVariables.RECOVERY_REQUIRED} == 'true':
+              # EQ true RUNS the stage; any other value fails the rule and SKIP
+              # engages. CREATE/UPDATE export RECOVERY_REQUIRED=false.
+
+        - Name: Approve-Data-Recovery
+          BeforeEntry:
+            Conditions:
+              - Result: SKIP
+                Rules:
+                  - Name: ApproveDataRecoveryVariableCheck
+                    RuleTypeId:
+                      Category: Rule
+                      Owner: AWS
+                      Provider: VariableCheck
+                      Version: '1'
+                    Configuration:
+                      Operator: EQ
+                      Value: 'true'
+                      Variable: '#{DataDeploymentVariables.RECOVERY_REQUIRED}'
+          Actions:
+            - Name: ApproveDataRecovery
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                CustomData: !Sub 'Service: ${ServiceName}. Stage: ${Stage}. Commit: #{BuildVariables.CURRENT_COMMIT}. Action: #{DataDeploymentVariables.DATA_ACTION}. Existing data resource: #{DataDeploymentVariables.RECOVERY_TABLE_NAME}. Target stack: #{DataDeploymentVariables.RECOVERY_STACK_NAME}. Change set: #{DataDeploymentVariables.RECOVERY_CHANGE_SET_NAME}. Recovery: import existing DynamoDB table into CloudFormation. Safety: table will NOT be deleted or recreated. Approve only if this is the expected production table.'
+
+        - Name: Recover-Data
+          BeforeEntry:
+            Conditions:
+              - Result: SKIP
+                Rules:
+                  - Name: RecoverDataVariableCheck
+                    RuleTypeId:
+                      Category: Rule
+                      Owner: AWS
+                      Provider: VariableCheck
+                      Version: '1'
+                    Configuration:
+                      Operator: EQ
+                      Value: 'true'
+                      Variable: '#{DataDeploymentVariables.RECOVERY_REQUIRED}'
+          Actions:
+            - Name: RecoverData
+              Namespace: DataRecoveryVariables
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              InputArtifacts:
+                - Name: BuildArtifact
+                - Name: DataPreflightArtifact
+              Configuration:
+                ProjectName: !Ref RecoverDataProject
+                PrimarySource: BuildArtifact
+                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ARTIFACT_BUCKET","value":"#{variables.ArtifactBucket}","type":"PLAINTEXT"},{"name":"CURRENT_COMMIT","value":"#{BuildVariables.CURRENT_COMMIT}","type":"PLAINTEXT"},{"name":"DATA_ACTION","value":"#{DataDeploymentVariables.DATA_ACTION}","type":"PLAINTEXT"},{"name":"RECOVERY_REQUIRED","value":"#{DataDeploymentVariables.RECOVERY_REQUIRED}","type":"PLAINTEXT"},{"name":"RECOVERY_CHANGE_SET_NAME","value":"#{DataDeploymentVariables.RECOVERY_CHANGE_SET_NAME}","type":"PLAINTEXT"},{"name":"RECOVERY_STACK_NAME","value":"#{DataDeploymentVariables.RECOVERY_STACK_NAME}","type":"PLAINTEXT"},{"name":"RECOVERY_TABLE_NAME","value":"#{DataDeploymentVariables.RECOVERY_TABLE_NAME}","type":"PLAINTEXT"},{"name":"CHANGE_SET_NAME","value":"#{DataDeploymentVariables.RECOVERY_CHANGE_SET_NAME}","type":"PLAINTEXT"},{"name":"DATA_RECOVERY_PHASE","value":"execute","type":"PLAINTEXT"},{"name":"RECOVERY_STATUS","value":"APPROVAL_GRANTED","type":"PLAINTEXT"}]'
+
+        - Name: Deploy-Infra
+          BeforeEntry:
+            Conditions:
+              - Result: SKIP
+                Rules:
+                  - Name: DeployInfraVariableCheck
+                    RuleTypeId:
+                      Category: Rule
+                      Owner: AWS
+                      Provider: VariableCheck
+                      Version: '1'
+                    Configuration:
+                      Operator: EQ
+                      Value: 'true'
+                      Variable: '#{BuildVariables.DEPLOY_INFRA}'
+          Actions:
+            - Name: DeployInfra
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              InputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ProjectName: !Ref DeployInfraProject
+                PrimarySource: BuildArtifact
+                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ARTIFACT_BUCKET","value":"#{variables.ArtifactBucket}","type":"PLAINTEXT"},{"name":"CURRENT_COMMIT","value":"#{BuildVariables.CURRENT_COMMIT}","type":"PLAINTEXT"}]'
+
+        - Name: Validate-SSM
+          Actions:
+            - Name: ValidateSSM
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              InputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ProjectName: !Ref ValidateSsmProject
+                PrimarySource: BuildArtifact
+                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"REQUIRED_SSM_PARAMETERS","value":"${RequiredSsmParameters}","type":"PLAINTEXT"},{"name":"SSM_PREFIX","value":"/${Stage}/${ServiceName}","type":"PLAINTEXT"}]'
+
+        - Name: Deploy-App
+          BeforeEntry:
+            Conditions:
+              - Result: SKIP
+                Rules:
+                  - Name: DeployAppVariableCheck
+                    RuleTypeId:
+                      Category: Rule
+                      Owner: AWS
+                      Provider: VariableCheck
+                      Version: '1'
+                    Configuration:
+                      Operator: EQ
+                      Value: 'true'
+                      Variable: '#{BuildVariables.DEPLOY_APP}'
+          Actions:
+            - Name: DeployApp
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              InputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ProjectName: !Ref DeployAppProject
+                PrimarySource: BuildArtifact
+                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ARTIFACT_BUCKET","value":"#{variables.ArtifactBucket}","type":"PLAINTEXT"},{"name":"STACK_NAME","value":"${Stage}-${ServiceName}","type":"PLAINTEXT"},{"name":"CURRENT_COMMIT","value":"#{BuildVariables.CURRENT_COMMIT}","type":"PLAINTEXT"}]'
+
+        - Name: Smoke-Test
+          BeforeEntry:
+            Conditions:
+              - Result: SKIP
+                Rules:
+                  - Name: SmokeTestVariableCheck
+                    RuleTypeId:
+                      Category: Rule
+                      Owner: AWS
+                      Provider: VariableCheck
+                      Version: '1'
+                    Configuration:
+                      Operator: EQ
+                      Value: 'true'
+                      Variable: '#{BuildVariables.DEPLOY_APP}'
+          Actions:
+            - Name: SmokeTest
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              InputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ProjectName: !Ref SmokeTestProject
+                PrimarySource: BuildArtifact
+                # HEALTH_RESPONSE_CONTAINS stays on SmokeTestProject env (may contain quotes).
+                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"API_BASE_URL_PARAMETER","value":"${ApiBaseUrlParameter}","type":"PLAINTEXT"},{"name":"HEALTH_CHECK_PATH","value":"${HealthCheckPath}","type":"PLAINTEXT"}]'
+
+        - Name: Record-Deployment
+          Actions:
+            - Name: RecordDeployment
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ProjectName: !Ref RecordDeploymentProject
+                PrimarySource: SourceArtifact
+                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"CURRENT_COMMIT","value":"#{BuildVariables.CURRENT_COMMIT}","type":"PLAINTEXT"},{"name":"LAST_DEPLOYED_COMMIT_PARAM","value":"/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT","type":"PLAINTEXT"}]'
+
+Outputs:
+  PipelineName:
+    Description: CodePipeline name
+    Value: !Ref ServicePipeline
+  PipelineArn:
+    Description: CodePipeline ARN
+    Value: !Sub 'arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${PipelineName}'
+  DataStackName:
+    Description: Derived data stack name
+    Value: !Sub '${Stage}-${ServiceName}-data'
+  InfraStackName:
+    Description: Derived infrastructure stack name
+    Value: !Sub '${Stage}-${ServiceName}-infra'
+  AppStackName:
+    Description: Derived application stack name
+    Value: !Sub '${Stage}-${ServiceName}'
+  CicdStackName:
+    Description: Expected CICD stack name for this template
+    Value: !Sub '${Stage}-${ServiceName}-cicd'
+  LastDeployedCommitParameter:
+    Description: SSM parameter written by Record-Deployment
+    Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
+  SsmPrefix:
+    Description: Service SSM parameter prefix
+    Value: !Sub '/${Stage}/${ServiceName}'
+  DataTemplatePath:
+    Description: Immutable data packaged template path pattern
+    Value: !Sub 's3://${ArtifactBucket}/${ServiceName}/<commit-sha>/data/packaged.yaml'
+  InfraTemplatePath:
+    Description: Immutable infra packaged template path pattern
+    Value: !Sub 's3://${ArtifactBucket}/${ServiceName}/<commit-sha>/infra/packaged.yaml'
+  AppTemplatePath:
+    Description: Immutable app packaged template path pattern
+    Value: !Sub 's3://${ArtifactBucket}/${ServiceName}/<commit-sha>/app/packaged.yaml'
+  FrameworkBundlePath:
+    Description: Framework bundle object used by inline BuildSpecs when FrameworkPath is absent
+    Value: !Sub 's3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz'
+  CloudFormationDeployRoleArn:
+    Description: CloudFormation service role for normal deploy
+    Value: !GetAtt CloudFormationDeployRole.Arn
+  CloudFormationRecoverDataRoleArn:
+    Description: CloudFormation service role for data recovery IMPORT
+    Value: !GetAtt CloudFormationRecoverDataRole.Arn
+  RecoverDataRoleArn:
+    Description: CodeBuild role used for recovery execute
+    Value: !GetAtt RecoverDataRole.Arn
+  PipelineRoleArn:
+    Description: CodePipeline service role
+    Value: !GetAtt PipelineRole.Arn
+  BuildProjectNameOut:
+    Description: Build CodeBuild project name (created or external)
+    Value: !If
+      - CreateBuildProject
+      - !Ref BuildProject
+      - !Ref BuildProjectName
+  DeployDataProjectName:
+    Description: Deploy-Data CodeBuild project
+    Value: !Ref DeployDataProject
+  RecoverDataProjectName:
+    Description: Recover-Data CodeBuild project
+    Value: !Ref RecoverDataProject
+  DeployInfraProjectName:
+    Description: Deploy-Infra CodeBuild project
+    Value: !Ref DeployInfraProject
+  DeployAppProjectName:
+    Description: Deploy-App CodeBuild project
+    Value: !Ref DeployAppProject
+  ValidateSsmProjectName:
+    Description: Validate-SSM CodeBuild project
+    Value: !Ref ValidateSsmProject
+  SmokeTestProjectName:
+    Description: Smoke-Test CodeBuild project
+    Value: !Ref SmokeTestProject
+  RecordDeploymentProjectName:
+    Description: Record-Deployment CodeBuild project
+    Value: !Ref RecordDeploymentProject

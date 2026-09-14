@@ -1,0 +1,110 @@
+{
+  "name": "@api-hub/workflow-service",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build:package": "bash ci/build.sh",
+    "offline": "npx --no-install serverless offline --stage dev",
+    "package": "npx --no-install serverless package",
+    "package:data": "cd data && npx --no-install serverless package --config serverless.data.yml --package .serverless",
+    "package:infra": "cd infrastructure && npx --no-install serverless package --config serverless.infra.yml --package .serverless",
+    "print:data": "cd data && npx --no-install serverless print --config serverless.data.yml",
+    "print:infra": "cd infrastructure && npx --no-install serverless print --config serverless.infra.yml",
+    "test": "npx jest --config=jest.config.cjs",
+    "test:coverage": "npx jest --config=jest.config.cjs --coverage",
+    "test:watch": "npx jest --config=jest.config.cjs --watch"
+  },
+  "nx": {
+    "name": "workflow-service",
+    "targets": {
+      "build": {
+        "executor": "@nx/esbuild:esbuild",
+        "outputs": ["{options.outputPath}"],
+        "defaultConfiguration": "production",
+        "options": {
+          "platform": "node",
+          "outputPath": "dist/apps/workflow-service-esbuild",
+          "format": ["cjs"],
+          "bundle": false,
+          "main": "apps/workflow-service/src/index.ts",
+          "tsConfig": "apps/workflow-service/tsconfig.app.json",
+          "assets": [],
+          "esbuildOptions": {
+            "sourcemap": true,
+            "outExtension": {
+              ".js": ".js"
+            }
+          }
+        },
+        "configurations": {
+          "development": {},
+          "production": {
+            "esbuildOptions": {
+              "sourcemap": false,
+              "outExtension": {
+                ".js": ".js"
+              }
+            }
+          }
+        }
+      },
+      "prune-lockfile": {
+        "dependsOn": ["build"],
+        "cache": true,
+        "executor": "@nx/js:prune-lockfile",
+        "outputs": [
+          "{workspaceRoot}/dist/apps/workflow-service-esbuild/package.json",
+          "{workspaceRoot}/dist/apps/workflow-service-esbuild/pnpm-lock.yaml"
+        ],
+        "options": {
+          "buildTarget": "build"
+        }
+      },
+      "copy-workspace-modules": {
+        "dependsOn": ["build"],
+        "cache": true,
+        "outputs": [
+          "{workspaceRoot}/dist/apps/workflow-service-esbuild/workspace_modules"
+        ],
+        "executor": "@nx/js:copy-workspace-modules",
+        "options": {
+          "buildTarget": "build"
+        }
+      },
+      "prune": {
+        "dependsOn": ["prune-lockfile", "copy-workspace-modules"],
+        "executor": "nx:noop"
+      },
+      "serve": {
+        "continuous": true,
+        "executor": "@nx/js:node",
+        "defaultConfiguration": "development",
+        "dependsOn": ["build"],
+        "options": {
+          "buildTarget": "@api-hub/workflow-service:build",
+          "runBuildTargetDependencies": false
+        },
+        "configurations": {
+          "development": {
+            "buildTarget": "@api-hub/workflow-service:build:development"
+          },
+          "production": {
+            "buildTarget": "@api-hub/workflow-service:build:production"
+          }
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@myvitalrx/mvrx-resource-registry": "^0.0.10",
+    "esbuild": "^0.19.2",
+    "serverless": "^3.40.0",
+    "serverless-auto-swagger": "^3.1.0",
+    "serverless-dotenv-plugin": "^6.0.0",
+    "serverless-esbuild": "^1.57.0",
+    "serverless-offline": "^13.9.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

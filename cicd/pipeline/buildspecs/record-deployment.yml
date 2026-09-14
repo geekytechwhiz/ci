@@ -1,0 +1,28 @@
+version: 0.2
+# Reference buildspec: Record-Deployment
+# Writes LAST_DEPLOYED_COMMIT after a successful pipeline run.
+
+env:
+  shell: bash
+
+phases:
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+        source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+        echo "STAGE=${STAGE:?} CURRENT_COMMIT=${CURRENT_COMMIT:-<unset>}"
+
+  build:
+    commands:
+      - "${CICD_SCRIPTS_DIR}/run-record-deployment.sh"
+
+  post_build:
+    commands:
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
+          echo "Record-Deployment failed; LAST_DEPLOYED_COMMIT was not updated"
+          exit 1
+        fi
+        echo "Record-Deployment finished"

@@ -1,0 +1,24 @@
+# Local overrides (never commit secrets)
+config/environments/*.local.yaml
+config/services/**/*.local.yaml
+*.local.yaml
+
+# Generated / packaged artifacts
+.package/
+dist/
+*.zip
+framework-bundle/
+.deploy-params.json
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Validation caches
+.cfn-lint-cache/
+__pycache__/
+*.pyc
+.node_modules/

@@ -1,0 +1,46 @@
+version: 0.2
+# Reference buildspec: Build stage
+# Inline CFN buildspecs should mirror this: bootstrap → run-build.sh
+# Exported variables feed CodePipeline stage conditions.
+
+env:
+  shell: bash
+  exported-variables:
+    - DEPLOY_DATA
+    - DEPLOY_INFRA
+    - DEPLOY_APP
+    - CURRENT_COMMIT
+
+phases:
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+        if [ -f "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh" ]; then
+          # shellcheck disable=SC1090
+          source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+        else
+          echo "ERROR: Framework not found at ${FRAMEWORK_PATH}"
+          exit 1
+        fi
+        echo "STAGE=${STAGE:?}"
+        echo "SERVICE_NAME=${SERVICE_NAME:?}"
+        echo "ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?}"
+
+  build:
+    commands:
+      - "${CICD_SCRIPTS_DIR}/run-build.sh"
+
+  post_build:
+    commands:
+      - |
+        echo "DEPLOY_DATA=${DEPLOY_DATA:-}"
+        echo "DEPLOY_INFRA=${DEPLOY_INFRA:-}"
+        echo "DEPLOY_APP=${DEPLOY_APP:-}"
+        echo "CURRENT_COMMIT=${CURRENT_COMMIT:-}"
+
+artifacts:
+  files:
+    - '**/*'
+  discard-paths: no

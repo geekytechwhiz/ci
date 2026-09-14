@@ -1,0 +1,65 @@
+version: 0.2
+# Service buildspec. Delegates execution to the generic CI/CD framework.
+
+env:
+  shell: bash
+  exported-variables:
+    - DEPLOY_DATA
+    - DEPLOY_INFRA
+    - DEPLOY_APP
+    - CURRENT_COMMIT
+  variables:
+    STAGE: 'dev'
+    AWS_REGION: 'us-east-1'
+    STACK_NAME: 'dev-workflow-service'
+    DATA_STACK_NAME: 'dev-workflow-service-data'
+    INFRA_STACK_NAME: 'dev-workflow-service-infra'
+    WORKFLOW_TABLE_NAME: 'workflow-service-dev'
+    NODE_OPTIONS: '--max-old-space-size=2048'
+    FRAMEWORK_PATH: 'cicd/pipeline'
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 22
+    commands:
+      - echo "Installing dependencies if needed..."
+      - npm install --legacy-peer-deps || true
+
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        if [ -f "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh" ]; then
+          # shellcheck disable=SC1090
+          source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+        elif [ -f "../../cicd/pipeline/scripts/bootstrap-framework.sh" ]; then
+          source "../../cicd/pipeline/scripts/bootstrap-framework.sh"
+        else
+          echo "Framework bootstrap script not found — continuing with local packaging."
+        fi
+
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        if [ -n "${CICD_SCRIPTS_DIR:-}" ] && [ -f "${CICD_SCRIPTS_DIR}/run-build.sh" ]; then
+          "${CICD_SCRIPTS_DIR}/run-build.sh"
+        else
+          chmod +x ci/build.sh
+          ci/build.sh
+        fi
+
+artifacts:
+  files:
+    - packaged.yaml
+    - .serverless/**/*
+    - data/packaged.yaml
+    - data/.serverless/**/*
+    - infrastructure/packaged.yaml
+    - infrastructure/.serverless/**/*
+    - ci/**/*
+    - deployment-manifest.json
+    - deployment-decision.env
+  discard-paths: no
+
