@@ -1354,20 +1354,20 @@ Resources:
           phases:
             install:
               commands:
-        - |
-          set -euo pipefail
-          if [ -d "${FrameworkPath}" ]; then
-            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
-          else
-            mkdir -p /tmp/cicd-framework
-            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
-          fi
-          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                - |
+                  set -euo pipefail
+                  if [ -d "${FrameworkPath}" ]; then
+                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                  else
+                    mkdir -p /tmp/cicd-framework
+                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                  fi
+                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
                 - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-build.sh"
@@ -1464,20 +1464,20 @@ Resources:
           phases:
             install:
               commands:
-        - |
-          set -euo pipefail
-          if [ -d "${FrameworkPath}" ]; then
-            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
-          else
-            mkdir -p /tmp/cicd-framework
-            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
-          fi
-          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                - |
+                  set -euo pipefail
+                  if [ -d "${FrameworkPath}" ]; then
+                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                  else
+                    mkdir -p /tmp/cicd-framework
+                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                  fi
+                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
                 - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-deploy-data.sh"
@@ -1596,20 +1596,20 @@ Resources:
           phases:
             install:
               commands:
-        - |
-          set -euo pipefail
-          if [ -d "${FrameworkPath}" ]; then
-            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
-          else
-            mkdir -p /tmp/cicd-framework
-            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
-          fi
-          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                - |
+                  set -euo pipefail
+                  if [ -d "${FrameworkPath}" ]; then
+                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                  else
+                    mkdir -p /tmp/cicd-framework
+                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                  fi
+                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
                 - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-recover-data.sh"
@@ -1715,20 +1715,20 @@ Resources:
           phases:
             install:
               commands:
-        - |
-          set -euo pipefail
-          if [ -d "${FrameworkPath}" ]; then
-            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
-          else
-            mkdir -p /tmp/cicd-framework
-            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
-          fi
-          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                - |
+                  set -euo pipefail
+                  if [ -d "${FrameworkPath}" ]; then
+                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                  else
+                    mkdir -p /tmp/cicd-framework
+                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                  fi
+                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
                 - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-deploy-infra.sh"
@@ -1822,20 +1822,20 @@ Resources:
           phases:
             install:
               commands:
-        - |
-          set -euo pipefail
-          if [ -d "${FrameworkPath}" ]; then
-            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
-          else
-            mkdir -p /tmp/cicd-framework
-            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
-          fi
-          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                - |
+                  set -euo pipefail
+                  if [ -d "${FrameworkPath}" ]; then
+                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                  else
+                    mkdir -p /tmp/cicd-framework
+                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                  fi
+                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
                 - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-deploy-app.sh"
@@ -1929,20 +1929,20 @@ Resources:
           phases:
             install:
               commands:
-        - |
-          set -euo pipefail
-          if [ -d "${FrameworkPath}" ]; then
-            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
-          else
-            mkdir -p /tmp/cicd-framework
-            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
-          fi
-          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                - |
+                  set -euo pipefail
+                  if [ -d "${FrameworkPath}" ]; then
+                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                  else
+                    mkdir -p /tmp/cicd-framework
+                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                  fi
+                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
                 - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-validate-ssm.sh"
@@ -2039,20 +2039,20 @@ Resources:
           phases:
             install:
               commands:
-        - |
-          set -euo pipefail
-          if [ -d "${FrameworkPath}" ]; then
-            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
-          else
-            mkdir -p /tmp/cicd-framework
-            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
-          fi
-          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                - |
+                  set -euo pipefail
+                  if [ -d "${FrameworkPath}" ]; then
+                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                  else
+                    mkdir -p /tmp/cicd-framework
+                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                  fi
+                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
                 - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-smoke-test.sh"
@@ -2158,20 +2158,20 @@ Resources:
           phases:
             install:
               commands:
-        - |
-          set -euo pipefail
-          if [ -d "${FrameworkPath}" ]; then
-            export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
-            echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
-          else
-            mkdir -p /tmp/cicd-framework
-            aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-            tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-            export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-            echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
-          fi
-          test -d "$${CICD_FRAMEWORK_DIR}/scripts"
-          chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
+                - |
+                  set -euo pipefail
+                  if [ -d "${FrameworkPath}" ]; then
+                    export CICD_FRAMEWORK_DIR="$${CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    echo "Using monorepo framework at $${CICD_FRAMEWORK_DIR}"
+                  else
+                    mkdir -p /tmp/cicd-framework
+                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
+                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
+                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
+                    echo "Downloaded framework to $${CICD_FRAMEWORK_DIR}"
+                  fi
+                  test -d "$${CICD_FRAMEWORK_DIR}/scripts"
+                  chmod +x "$${CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
                 - bash "$${CICD_FRAMEWORK_DIR}/scripts/run-record-deployment.sh"
