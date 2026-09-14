@@ -1,0 +1,59 @@
+service:
+  name: workflow-service
+  root: apps/workflow
+
+source:
+  repository: OfficialOrg/api-hub
+  branch: main
+  ciPath: apps/workflow/ci
+
+deployment:
+  data: true
+  infrastructure: true
+  application: true
+
+data:
+  enabled: true
+  type: dynamodb
+  logicalId: WorkflowTable
+  tableName: workflow-service-prd
+  ownershipTags:
+    Service: workflow-service
+    Purpose: primaryDataTable
+    ManagedBy: serverless
+
+features:
+  dynamodb: true
+  sqs: true
+  lambda: true
+  apiGateway: true
+
+ssm:
+  prefix: /prd/workflow-service
+  required:
+    - TABLE_NAME
+    - TABLE_ARN
+    - STREAM_ARN
+    - SQS_QUEUE_URL
+    - SQS_QUEUE_ARN
+
+application:
+  healthCheckPath: /health
+  apiBaseUrlParameter: /prd/workflow-service/api-base-url
+  healthResponseContains: '"status": "healthy"'
+  smokeTest: required
+  buildProjectName: ""
+
+changeDetection:
+  data:
+    - apps/workflow/data/**
+  infrastructure:
+    - apps/workflow/infrastructure/**
+  application:
+    - apps/workflow/src/**
+    - apps/workflow/serverless.yml
+    - apps/workflow/config/**
+  ci:
+    - apps/workflow/ci/**
+    - apps/workflow/package.json
+    - apps/workflow/prd-buildspec.yml
