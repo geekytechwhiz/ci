@@ -1,0 +1,94 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "importHelpers": true,
+    "isolatedModules": true,
+    "lib": [
+      "es2022"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmitOnError": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "baseUrl": ".",
+    "target": "es2022",
+    "customConditions": [
+      "@api-hub/source"
+    ],
+    "paths": { 
+      "@api-hub/event-platform": ["libs/event-platform/src/index.ts"],
+      "@api-hub/observability": ["libs/observability/src/index.ts"],
+      "@api-hub/utils": ["libs/utils/src/index.ts"],
+      "@api-hub/utils/http-response": ["libs/utils/src/helper/http-response.helpers.ts"],
+      "@api-hub/canonical": ["libs/canonical/src/index.ts"],
+ 
+      "@api-hub/consent": ["libs/consent/src/index.ts"],
+      "@api-hub/capability": ["libs/capability/src/index.ts"],
+      "@api-hub/terminology": ["libs/terminology/src/index.ts"],
+      "@api-hub/fhir": ["libs/fhir/src/index.ts"],
+      "@api-hub/fhir/middleware": ["libs/fhir/src/middleware/index.ts"],
+      "@api-hub/fhir-validator": ["libs/fhir-validator/src/index.ts"],
+      "@api-hub/middleware": ["libs/middleware/src/index.ts"],
+      "@myvitalrx/platform-tools/middleware": [
+        "packages/platform-tools/src/middleware.ts"
+      ],
+      "@myvitalrx/platform-tools/observability": [
+        "packages/platform-tools/src/observability.ts"
+      ],
+      "@myvitalrx/platform-tools/event-platform": [
+        "packages/platform-tools/src/event-platform.ts"
+      ],
+      "@myvitalrx/platform-tools/event-platform/dx": [
+        "packages/platform-tools/src/event-platform-dx.ts"
+      ],
+      "@myvitalrx/fhir-wrapper": [
+        "packages/fhir-wrapper/src/index.ts"
+      ],
+      "@myvitalrx/fhir-wrapper/middleware": [
+        "packages/fhir-wrapper/src/middleware.ts"
+      ],
+      "@api-hub/partners": ["libs/partners/src/index.ts"],
+      "@api-hub/integration-events": ["libs/integration-events/src/index.ts"],
+      "@api-hub/lab-integration": ["libs/lab-integration/src/index.ts"],
+      "@api-hub/auth": ["libs/auth/src/index.ts"],
+      "@api-hub/scope-mapping": ["libs/scope-mapping/src/index.ts"],
+      "@api-hub/access-audit": ["libs/access-audit/src/index.ts"],
+      "@api-hub/tenant-guard": ["libs/tenant-guard/src/index.ts"],
+      "@api-hub/service-clients": ["libs/service-clients/src/index.ts"],
+      "@api-hub/template": ["libs/template/src/index.ts"],
+      "@api-hub/template/*": ["libs/template/src/*"],
+      "@api-hub/rule-engine": ["libs/rule-engine/src/index.ts"],
+      "@api-hub/care-plan": ["libs/template/src/care-plan/index.ts"],
+      "@api-hub/template-core": ["libs/template-core/src/index.ts"],
+      "@api-hub/template-core/profile-fields": [
+        "libs/template-core/src/lib/utils/profile-fields.utils.ts"
+      ],
+      "@api-hub/template-dto": ["libs/template/src/api/request.schemas.ts"],
+      "@api-hub/template-rules": ["libs/rule-engine/src/index.ts"],
+      "@api-hub/template-executor": ["libs/template/src/application/index.ts"],
+      "@api-hub/template-repository": ["libs/template/src/infrastructure/index.ts"],
+      "@api-hub/template-storage": ["libs/template/src/infrastructure/index.ts"],
+      "@api-hub/alert-core": ["libs/alert-core/src/index.ts"],
+      "@api-hub/task-core": ["libs/task-core/src/index.ts"],
+      "@api-hub/symptom-runtime-core": ["libs/symptom-runtime-core/src/index.ts"],
+      "@api-hub/care-plan-runtime-core": ["libs/care-plan-runtime-core/src/index.ts"],
+      "@api-hub/goal-core": ["libs/goal-core/src/index.ts"],
+      "@api-hub/metadata": ["libs/metadata/src/index.ts"],
+      "@api-hub/metadata-projection": ["libs/metadata-projection/src/index.ts"],
+      "@api-hub/runtime-metadata": ["libs/runtime-metadata/src/index.ts"],
+      "@api-hub/runtime-response-projector": [
+        "libs/runtime-response-projector/src/index.ts"
+      ],
+      "@api-hub/monitoring-runtime-core": ["libs/monitoring-runtime-core/src/index.ts"],
+      "@api-hub/threshold-runtime-core": ["libs/threshold-runtime-core/src/index.ts"],
+      "@api-hub/workflow-runtime-core": ["libs/workflow-runtime-core/src/index.ts"]
+    }
+  }
+}

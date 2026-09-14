@@ -41,3 +41,71 @@ Resources:
       Tags:
         Service: workflow-service
         Stage: ${self:provider.stage}
+
+  WorkflowEventsBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: workflow-service-bus-${self:provider.stage}
+      Tags:
+        - Key: Service
+          Value: workflow-service
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Purpose
+          Value: EventBus
+        - Key: ManagedBy
+          Value: serverless
+
+  WorkflowEventsToQueueRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ${self:provider.stage}-workflow-service-to-sqs
+      Description: Forward workflow-service events from the service bus to SQS
+      EventBusName: !Ref WorkflowEventsBus
+      EventPattern:
+        source:
+          - workflow-service
+      State: ENABLED
+      Targets:
+        - Id: WorkflowEventsQueue
+          Arn: !GetAtt WorkflowEventsQueue.Arn
+
+  WorkflowEventsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref WorkflowEventsQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventBridgeSendMessage
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt WorkflowEventsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt WorkflowEventsToQueueRule.Arn
+
+  WorkflowEventsBusNameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /${self:provider.stage}/workflow-service/EVENT_BUS_NAME
+      Type: String
+      Description: Workflow events EventBridge bus name
+      Value: !Ref WorkflowEventsBus
+      Tags:
+        Service: workflow-service
+        Stage: ${self:provider.stage}
+
+  WorkflowEventsBusArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /${self:provider.stage}/workflow-service/EVENT_BUS_ARN
+      Type: String
+      Description: Workflow events EventBridge bus ARN
+      Value: !GetAtt WorkflowEventsBus.Arn
+      Tags:
+        Service: workflow-service
+        Stage: ${self:provider.stage}

@@ -1,5 +1,5 @@
 {
-  "extends": "../../tsconfig.base.json",
+  "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
     "types": ["node"],
@@ -8,16 +8,7 @@
     "declaration": false,
     "declarationMap": false,
     "emitDeclarationOnly": false,
-    "baseUrl": "../..",
-    "paths": {
-      "@api-hub/workflow-runtime-core": [
-        "libs/workflow-runtime-core/src/index.ts"
-      ],
-      "@api-hub/middleware": ["libs/middleware/src/index.ts"],
-      "@api-hub/utils": ["libs/utils/src/index.ts"],
-      "@api-hub/observability": ["libs/observability/src/index.ts"],
-      "@api-hub/service-clients": ["libs/service-clients/src/index.ts"]
-    },
+    "baseUrl": ".",
     "resolveJsonModule": true
   },
   "include": ["src/**/*.ts"],
@@ -29,28 +20,5 @@
     "src/**/*.spec.ts",
     "src/**/*.test.ts",
     "src/**/__tests__/**"
-  ],
-  "references": [
-    {
-      "path": "../../libs/service-clients/tsconfig.lib.json"
-    },
-    {
-      "path": "../../libs/observability/tsconfig.lib.json"
-    },
-    {
-      "path": "../../libs/utils/tsconfig.lib.json"
-    },
-    {
-      "path": "../../libs/workflow-runtime-core/tsconfig.lib.json"
-    },
-    {
-      "path": "../../libs/event-platform/tsconfig.lib.json"
-    },
-    {
-      "path": "../../libs/middleware/tsconfig.lib.json"
-    },
-    {
-      "path": "../../tools/mvrx-resource-registry/tsconfig.lib.json"
-    }
   ]
 }

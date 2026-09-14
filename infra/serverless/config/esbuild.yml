@@ -1,0 +1,24 @@
+bundle: true
+minify: ${self:custom.esbuildMinify.${self:provider.stage}, false}
+sourcemap: ${self:custom.sourcemapsByStage.${self:provider.stage}, false}
+target: node22
+platform: node
+format: cjs
+tsconfig: ./tsconfig.app.json
+nodePaths:
+  - ./node_modules
+external:
+  - aws-sdk 
+keepNames: ${self:custom.keepNamesByStage.${self:provider.stage}, true} 
+skipRebuild: true
+disposeContext: true 
+concurrency: 1
+zipConcurrency: 1
+plugins: esbuild-plugins.js
+resolveExtensions:
+  - '.ts'
+  - '.tsx'
+  - '.js'
+  - '.jsx'
+  - '.mjs'
+  - '.json'

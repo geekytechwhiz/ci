@@ -1,0 +1,4 @@
+httpPort: 3000
+noPrependStageInUrl: true
+# Default Lambda timeout when function timeout is not set (seconds).
+timeout: 120

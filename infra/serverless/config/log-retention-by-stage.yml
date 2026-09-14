@@ -1,0 +1,9 @@
+# SSM-driven Lambda log retention (days). Create params per stage before deploy.
+# Fallbacks match prior platform default (14 dev/stg, 30 prd).
+# dev: ${ssm:/dev/platform/lambda-log-retention-days, '5'}
+# stg: ${ssm:/stg/platform/lambda-log-retention-days, '5'}
+# prd: ${ssm:/firminiq/prd/platform/lambda-log-retention-days, '30'}
+
+dev: 5
+stg: 5
+prd: 30

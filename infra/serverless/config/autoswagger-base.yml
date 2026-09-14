@@ -1,0 +1,17 @@
+title: ${self:custom.apiTitle}
+apiType: http
+basePath: /${self:provider.stage}
+schemes:
+  - https
+  - http
+host: ${self:custom.apiHost, ''}
+generateSwaggerOnDeploy: true
+swaggerFiles:
+  - swagger.json
+useStage: true
+swaggerPath: swagger 
+excludeStages:
+  - production
+  - dev
+  - stg
+  - prd

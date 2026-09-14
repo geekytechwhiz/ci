@@ -55,6 +55,9 @@ changeDetection:
     - workflow/src/**
     - workflow/serverless.yml
     - workflow/config/**
+    - workflow/esbuild-plugins.js
+    - infra/serverless/**
+    - libs/**
   ci:
     - workflow/ci/**
     - workflow/package.json

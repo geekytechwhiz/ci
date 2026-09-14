@@ -1,0 +1,54 @@
+# Shared platform SSM paths — cross-service URLs under /mvx/{stage}/shared/*.
+dev:
+  userServiceBaseUrl: /mvx/dev/shared/user-service-base-url
+  organizationServiceBaseUrl: /mvx/dev/shared/organization-service-base-url
+  metadataRegistryServiceBaseUrl: /mvx/dev/shared/metadata-registry-service-base-url
+  templateServiceBaseUrl: /mvx/dev/shared/template-service-base-url
+  workflowServiceBaseUrl: /mvx/dev/shared/workflow-service-base-url
+  errorMessagesCdnUrl: /mvx/dev/shared/error-messages-cdn-url
+  userTableName: /mvx/dev/user-service/user-table-name
+  packageTableName: /mvx/dev/shared/package-table-name
+  secretManagerName: /mvx/dev/shared/demo-secret-manager-name
+  carePlanRuntimeLogLevel: /mvx/dev/care-plan-runtime/log-level
+  templateServiceLogLevel: /mvx/dev/template-service/log-level
+  internalServiceToken: /mvx/dev/shared/internal-service-token
+  vitalsServiceBaseUrl: /mvx/dev/shared/vitals-service-base-url
+  userEventsTopicArn: /dev/user-service/USER_EVENTS_TOPIC_ARN
+  completeTaskLambdaName: /dev/device-service/COMPLETE_TASK_LAMBDA_NAME
+  logLevel: /dev/device-service/LOG_LEVEL
+
+stg:
+  userServiceBaseUrl: /mvx/stg/shared/user-service-base-url
+  organizationServiceBaseUrl: /mvx/stg/shared/organization-service-base-url
+  metadataRegistryServiceBaseUrl: /mvx/stg/shared/metadata-registry-service-base-url
+  templateServiceBaseUrl: /mvx/stg/shared/template-service-base-url
+  workflowServiceBaseUrl: /mvx/stg/shared/workflow-service-base-url
+  errorMessagesCdnUrl: /mvx/stg/shared/error-messages-cdn-url
+  userTableName: /mvx/stg/user-service/user-table-name
+  packageTableName: /mvx/stg/shared/package-table-name
+  secretManagerName: /mvx/stg/shared/demo-secret-manager-name
+  carePlanRuntimeLogLevel: /mvx/stg/care-plan-runtime/log-level
+  templateServiceLogLevel: /mvx/stg/template-service/log-level
+  internalServiceToken: /mvx/stg/shared/internal-service-token
+  vitalsServiceBaseUrl: /mvx/stg/shared/vitals-service-base-url
+  userEventsTopicArn: /stg/user-service/USER_EVENTS_TOPIC_ARN
+  completeTaskLambdaName: /stg/device-service/COMPLETE_TASK_LAMBDA_NAME
+  logLevel: /stg/device-service/LOG_LEVEL
+
+prd:
+  userServiceBaseUrl: /mvx/prd/shared/user-service-base-url
+  organizationServiceBaseUrl: /mvx/prd/shared/organization-service-base-url
+  metadataRegistryServiceBaseUrl: /mvx/prd/shared/metadata-registry-service-base-url
+  templateServiceBaseUrl: /mvx/prd/shared/template-service-base-url
+  workflowServiceBaseUrl: /mvx/prd/shared/workflow-service-base-url
+  errorMessagesCdnUrl: /mvx/prd/shared/error-messages-cdn-url
+  userTableName: /mvx/prd/user-service/user-table-name
+  packageTableName: /mvx/prd/shared/package-table-name
+  secretManagerName: /mvx/prd/shared/demo-secret-manager-name
+  carePlanRuntimeLogLevel: /mvx/prd/care-plan-runtime/log-level
+  templateServiceLogLevel: /mvx/prd/template-service/log-level
+  internalServiceToken: /mvx/prd/shared/internal-service-token
+  vitalsServiceBaseUrl: /mvx/prd/shared/vitals-service-base-url
+  userEventsTopicArn: /firminiq/prd/user-service/USER_EVENTS_TOPIC_ARN
+  completeTaskLambdaName: /firminiq/prd/device-service/COMPLETE_TASK_LAMBDA_NAME
+  logLevel: /firminiq/prd/device-service/LOG_LEVEL

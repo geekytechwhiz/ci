@@ -1,0 +1,4 @@
+individually: true
+patterns:
+  - '!**/*.test.ts'
+  - '!**/*.spec.ts'
