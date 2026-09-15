@@ -2323,9 +2323,8 @@ Resources:
               # VariableCheck (Result SKIP) and #{BuildVariables.CURRENT_COMMIT}
               # for artifact fetch and Record-Deployment.
               # VariableCheck treats an empty resolved value as a configuration
-              # error ("Variable cannot be empty"). bash run-build.sh cannot
-              # publish exports; the Build command must source
-              # deployment-decision.env into the CodeBuild parent shell.
+              # error ("Variable cannot be empty"), so Build post_build must
+              # source deployment-decision.env into the CodeBuild parent shell.
 
         - Name: Deploy-Data
           BeforeEntry:
