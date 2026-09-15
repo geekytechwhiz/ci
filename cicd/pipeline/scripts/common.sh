@@ -345,6 +345,47 @@ resolve_data_recovery_result_env() {
   printf '%s' "$candidate"
 }
 
+# Write KEY=value lines that can be sourced by promote-exported-variables.sh.
+# Values are shell-escaped so DATA_REASON and similar can contain spaces.
+write_sourcable_env() {
+  local dest="$1"
+  shift
+  local key tmp dir
+  [ -n "$dest" ] || {
+    echo "ERROR: write_sourcable_env requires a destination path" >&2
+    return 1
+  }
+  [ "$#" -gt 0 ] || {
+    echo "ERROR: write_sourcable_env requires at least one variable name" >&2
+    return 1
+  }
+  dir="$(dirname "$dest")"
+  mkdir -p "$dir"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/exported-env.XXXXXX")"
+  for key in "$@"; do
+    case "$key" in
+      [A-Za-z_]*) ;;
+      *)
+        echo "ERROR: write_sourcable_env: invalid variable name: $key" >&2
+        rm -f "$tmp"
+        return 1
+        ;;
+    esac
+    case "$key" in
+      *[!A-Za-z0-9_]*)
+        echo "ERROR: write_sourcable_env: invalid variable name: $key" >&2
+        rm -f "$tmp"
+        return 1
+        ;;
+    esac
+    local value=""
+    eval "value=\"\${${key}-}\""
+    printf '%s=%q\n' "$key" "$value" >>"$tmp"
+  done
+  mv "$tmp" "$dest"
+  echo "Wrote $dest"
+}
+
 resolve_deployment_manifest_dest() {
   local candidate="${DEPLOYMENT_MANIFEST:-deployment-manifest.json}"
   local src_root="${CODEBUILD_SRC_DIR:-}"

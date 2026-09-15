@@ -33,9 +33,15 @@ phases:
   post_build:
     commands:
       - |
-        echo "DATA_ACTION=${DATA_ACTION:-}"
-        echo "RECOVERY_REQUIRED=${RECOVERY_REQUIRED:-}"
-        echo "RECOVERY_CHANGE_SET_NAME=${RECOVERY_CHANGE_SET_NAME:-}"
+        set -euo pipefail
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
+          echo "Build phase failed; not promoting CodePipeline variables."
+        else
+          source "${CICD_FRAMEWORK_DIR:-${CICD_SCRIPTS_DIR:-.}/..}/scripts/promote-exported-variables.sh" \
+            "${CODEBUILD_SRC_DIR:-.}/data-deployment-variables.env" \
+            DATA_ACTION RECOVERY_REQUIRED CURRENT_COMMIT \
+            RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE
+        fi
 
 artifacts:
   files:

@@ -144,25 +144,19 @@ if [ "$need_publish" = "true" ]; then
   "$SCRIPT_DIR/verify-artifacts.sh"
 fi
 
-# Re-write decision env with gated flags
+# Re-write decision env with gated flags. post_build sources this file in the
+# CodeBuild parent shell so CodePipeline VariableCheck receives non-empty values.
 decision_path="$DEPLOYMENT_DECISION_ENV"
 if [ -n "${CODEBUILD_SRC_DIR:-}" ] && [[ "$decision_path" != /* ]]; then
   decision_path="${CODEBUILD_SRC_DIR}/${DEPLOYMENT_DECISION_ENV}"
 fi
-mkdir -p "$(dirname "$decision_path")"
-cat >"$decision_path" <<EOF
-DEPLOY_DATA=$DEPLOY_DATA
-DEPLOY_INFRA=$DEPLOY_INFRA
-DEPLOY_APP=$DEPLOY_APP
-CURRENT_COMMIT=$CURRENT_COMMIT
-EOF
+write_sourcable_env "$decision_path" DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
 
 export DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
 echo "DEPLOY_DATA=$DEPLOY_DATA"
 echo "DEPLOY_INFRA=$DEPLOY_INFRA"
 echo "DEPLOY_APP=$DEPLOY_APP"
 echo "CURRENT_COMMIT=$CURRENT_COMMIT"
-echo "Wrote $decision_path"
 echo "========================================"
 echo "BUILD STAGE COMPLETED"
 echo "========================================"

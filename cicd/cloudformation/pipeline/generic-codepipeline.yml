@@ -1340,6 +1340,17 @@ Resources:
             build:
               commands:
                 - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-build.sh"
+            post_build:
+              commands:
+                - |
+                  set -euo pipefail
+                  if [ "${!CODEBUILD_BUILD_SUCCEEDING}" != "1" ]; then
+                    echo "Build phase failed; not promoting CodePipeline variables."
+                  else
+                    source "${!CICD_FRAMEWORK_DIR}/scripts/promote-exported-variables.sh" \
+                      "${!CODEBUILD_SRC_DIR}/deployment-decision.env" \
+                      DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
+                  fi
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_MEDIUM
@@ -1450,6 +1461,18 @@ Resources:
             build:
               commands:
                 - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-deploy-data.sh"
+            post_build:
+              commands:
+                - |
+                  set -euo pipefail
+                  if [ "${!CODEBUILD_BUILD_SUCCEEDING}" != "1" ]; then
+                    echo "Build phase failed; not promoting CodePipeline variables."
+                  else
+                    source "${!CICD_FRAMEWORK_DIR}/scripts/promote-exported-variables.sh" \
+                      "${!CODEBUILD_SRC_DIR}/data-deployment-variables.env" \
+                      DATA_ACTION RECOVERY_REQUIRED CURRENT_COMMIT \
+                      RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE
+                  fi
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -1582,6 +1605,17 @@ Resources:
             build:
               commands:
                 - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-recover-data.sh"
+            post_build:
+              commands:
+                - |
+                  set -euo pipefail
+                  if [ "${!CODEBUILD_BUILD_SUCCEEDING}" != "1" ]; then
+                    echo "Build phase failed; not promoting CodePipeline variables."
+                  else
+                    source "${!CICD_FRAMEWORK_DIR}/scripts/promote-exported-variables.sh" \
+                      "${!CODEBUILD_SRC_DIR}/deployment-data-recovery-result.env" \
+                      RECOVERY_SUCCESS DATA_ACTION CURRENT_COMMIT
+                  fi
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -2276,6 +2310,9 @@ Resources:
               # Later stages consume #{BuildVariables.DEPLOY_*} via BeforeEntry
               # VariableCheck (Result SKIP) and #{BuildVariables.CURRENT_COMMIT}
               # for artifact fetch and Record-Deployment.
+              # VariableCheck treats an empty resolved value as a configuration
+              # error ("Variable cannot be empty"), so Build post_build must
+              # source deployment-decision.env into the CodeBuild parent shell.
 
         - Name: Deploy-Data
           BeforeEntry:

@@ -96,9 +96,17 @@ case "${DATA_ACTION:-}" in
     ;;
 esac
 
-# Re-export for CodeBuild exported-variables
+# Re-export for CodeBuild exported-variables. The buildspec must source this
+# file in the parent shell; `bash run-deploy-data.sh` cannot publish them.
 export DATA_ACTION DATA_REASON RECOVERY_REQUIRED RECOVERY_CHANGE_SET_NAME
 export RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE CURRENT_COMMIT
+DATA_DEPLOYMENT_VARIABLES_ENV="${DATA_DEPLOYMENT_VARIABLES_ENV:-data-deployment-variables.env}"
+if [ -n "${CODEBUILD_SRC_DIR:-}" ] && [[ "$DATA_DEPLOYMENT_VARIABLES_ENV" != /* ]]; then
+  DATA_DEPLOYMENT_VARIABLES_ENV="${CODEBUILD_SRC_DIR}/${DATA_DEPLOYMENT_VARIABLES_ENV}"
+fi
+write_sourcable_env "$DATA_DEPLOYMENT_VARIABLES_ENV" \
+  DATA_ACTION DATA_REASON RECOVERY_REQUIRED RECOVERY_CHANGE_SET_NAME \
+  RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE CURRENT_COMMIT
 echo "Exported DataDeploymentVariables:"
 echo "  DATA_ACTION=${DATA_ACTION}"
 echo "  RECOVERY_REQUIRED=${RECOVERY_REQUIRED}"

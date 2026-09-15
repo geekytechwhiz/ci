@@ -49,6 +49,24 @@ phases:
           ci/build.sh
         fi
 
+  post_build:
+    commands:
+      - |
+        set -euo pipefail
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
+          echo "Build phase failed; not promoting CodePipeline variables."
+        elif [ -f "${CICD_SCRIPTS_DIR:-}/promote-exported-variables.sh" ]; then
+          source "${CICD_SCRIPTS_DIR}/promote-exported-variables.sh" \
+            "${CODEBUILD_SRC_DIR:-.}/deployment-decision.env" \
+            DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
+        elif [ -f deployment-decision.env ]; then
+          set -a
+          source deployment-decision.env
+          set +a
+          export DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
+          echo "DEPLOY_DATA=${DEPLOY_DATA:?} DEPLOY_INFRA=${DEPLOY_INFRA:?} DEPLOY_APP=${DEPLOY_APP:?} CURRENT_COMMIT=${CURRENT_COMMIT:?}"
+        fi
+
 artifacts:
   files:
     - packaged.yaml

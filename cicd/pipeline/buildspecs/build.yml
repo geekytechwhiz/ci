@@ -35,10 +35,14 @@ phases:
   post_build:
     commands:
       - |
-        echo "DEPLOY_DATA=${DEPLOY_DATA:-}"
-        echo "DEPLOY_INFRA=${DEPLOY_INFRA:-}"
-        echo "DEPLOY_APP=${DEPLOY_APP:-}"
-        echo "CURRENT_COMMIT=${CURRENT_COMMIT:-}"
+        set -euo pipefail
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
+          echo "Build phase failed; not promoting CodePipeline variables."
+        else
+          source "${CICD_FRAMEWORK_DIR:-${CICD_SCRIPTS_DIR:-.}/..}/scripts/promote-exported-variables.sh" \
+            "${CODEBUILD_SRC_DIR:-.}/deployment-decision.env" \
+            DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
+        fi
 
 artifacts:
   files:
