@@ -63,6 +63,7 @@ resolve_local_manifest() {
   return 1
 }
 
+echo "Publish working directory SERVICE_DIR=$SERVICE_DIR"
 cd "$SERVICE_DIR"
 
 DATA_TEMPLATE="${DATA_PACKAGED_TEMPLATE:-data/packaged.yaml}"
@@ -86,6 +87,9 @@ fi
 
 if [ "$need_data" = true ] && [ ! -f "$DATA_TEMPLATE" ]; then
   echo "ERROR: Data packaged template missing: $DATA_TEMPLATE"
+  echo "ERROR: Looked in SERVICE_DIR=$SERVICE_DIR (pwd=$(pwd))"
+  echo "ERROR: Service build.sh writes this file under SERVICE_DIR (next to serverless.yml), not the repo root."
+  ls -la data 2>/dev/null || ls -la "$SERVICE_DIR/data" 2>/dev/null || true
   exit 1
 fi
 if [ "$need_infra" = true ] && [ ! -f "$INFRA_TEMPLATE" ]; then

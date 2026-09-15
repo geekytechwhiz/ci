@@ -32,6 +32,7 @@ echo "BUILD STAGE (${SERVICE_NAME})"
 echo "========================================"
 echo "ENABLE_DATA=${ENABLE_DATA} ENABLE_INFRA=${ENABLE_INFRA} ENABLE_APP=${ENABLE_APP}"
 echo "CI_PATH=${CI_PATH:-<unset>}"
+echo "SERVICE_DIR=${SERVICE_DIR:-<unset>}"
 
 # Change detection
 "$SCRIPT_DIR/detect-deployment-changes.sh"
@@ -101,6 +102,19 @@ BUILD_HOOK=""
 if BUILD_HOOK="$(resolve_service_build_hook)"; then
   echo "Running service packaging hook: $BUILD_HOOK"
   chmod +x "$BUILD_HOOK" || true
+  # Pin SERVICE_DIR to the service root that owns the hook (…/ci/build.sh → …/).
+  # publish-artifacts.sh / verify-artifacts.sh are separate processes; they
+  # inherit this so they look for data/packaged.yaml next to serverless.yml,
+  # not at the repository root.
+  hook_dir="$(cd "$(dirname "$BUILD_HOOK")" && pwd)"
+  if [ "$(basename "$hook_dir")" = "ci" ]; then
+    SERVICE_DIR="$(cd "$hook_dir/.." && pwd)"
+  else
+    SERVICE_DIR="$hook_dir"
+  fi
+  SERVICE_ROOT="$SERVICE_DIR"
+  export SERVICE_DIR SERVICE_ROOT
+  echo "SERVICE_DIR=$SERVICE_DIR (from packaging hook)"
   DEPLOY_DATA="$DEPLOY_DATA" \
   DEPLOY_INFRA="$DEPLOY_INFRA" \
   DEPLOY_APP="$DEPLOY_APP" \
@@ -108,6 +122,8 @@ if BUILD_HOOK="$(resolve_service_build_hook)"; then
   SERVICE_NAME="$SERVICE_NAME" \
   STAGE="$STAGE" \
   ARTIFACT_BUCKET="$ARTIFACT_BUCKET" \
+  SERVICE_DIR="$SERVICE_DIR" \
+  SERVICE_ROOT="$SERVICE_ROOT" \
   bash "$BUILD_HOOK"
 elif [ "$need_publish" = "true" ]; then
   echo "ERROR: Publish is required (DEPLOY_DATA/INFRA/APP) but no service build.sh was found."

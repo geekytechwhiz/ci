@@ -20,9 +20,35 @@ OWNERSHIP_TAG_SERVICE="${OWNERSHIP_TAG_SERVICE:-${SERVICE_NAME}}"
 OWNERSHIP_TAG_PURPOSE="${OWNERSHIP_TAG_PURPOSE:-${DATA_LOGICAL_ID}}"
 OWNERSHIP_TAG_MANAGED_BY="${OWNERSHIP_TAG_MANAGED_BY:-serverless}"
 
-# Resolve service root (packaged templates, .serverless/, etc.)
+# Resolve the service directory that owns packaged templates (data/, infrastructure/, serverless.yml).
+# Prefer an explicit SERVICE_DIR / SERVICE_ROOT. Otherwise derive from CI_PATH
+# (CodeBuild sets CI_PATH to the service CI directory — service root is its parent).
+# Do not fall back to CODEBUILD_SRC_DIR first: that is the repository root, and
+# publish-artifacts.sh would then look for data/packaged.yaml in the wrong place.
+_resolve_service_root_from_ci_path() {
+  local ci_path="${CI_PATH:-${CiPath:-}}"
+  local ci_abs=""
+  ci_path="${ci_path%/}"
+  [ -z "$ci_path" ] && return 1
+
+  if [[ "$ci_path" = /* ]] && [ -d "$ci_path" ]; then
+    ci_abs="$ci_path"
+  elif [ -n "${CODEBUILD_SRC_DIR:-}" ] && [ -d "${CODEBUILD_SRC_DIR}/${ci_path}" ]; then
+    ci_abs="${CODEBUILD_SRC_DIR}/${ci_path}"
+  elif [ -d "$ci_path" ]; then
+    ci_abs="$(cd "$ci_path" && pwd)"
+  else
+    return 1
+  fi
+
+  cd "${ci_abs}/.." && pwd
+}
+
 if [ -z "${SERVICE_ROOT:-}" ] && [ -n "${SERVICE_DIR:-}" ]; then
   SERVICE_ROOT="$SERVICE_DIR"
+fi
+if [ -z "${SERVICE_ROOT:-}" ]; then
+  SERVICE_ROOT="$(_resolve_service_root_from_ci_path || true)"
 fi
 if [ -z "${SERVICE_ROOT:-}" ]; then
   if [ -n "${CODEBUILD_SRC_DIR:-}" ] && [ -d "${CODEBUILD_SRC_DIR}/apps/${SERVICE_NAME}" ]; then
@@ -34,6 +60,7 @@ if [ -z "${SERVICE_ROOT:-}" ]; then
   fi
 fi
 SERVICE_DIR="${SERVICE_DIR:-$SERVICE_ROOT}"
+unset -f _resolve_service_root_from_ci_path
 
 # Comma-separated list → bash array. Empty → empty array (validate-ssm may warn/skip).
 REQUIRED_SSM_PARAMS=()

@@ -254,8 +254,10 @@ else
   done < .serverless/s3keys.txt
 fi
 
-echo "Packaged templates created:"
-ls -la data/packaged.yaml infrastructure/packaged.yaml packaged.yaml
+echo "Packaged templates created under $SERVICE_DIR:"
+ls -la "$SERVICE_DIR/data/packaged.yaml" \
+  "$SERVICE_DIR/infrastructure/packaged.yaml" \
+  "$SERVICE_DIR/packaged.yaml"
 
 # Change detection decides DEPLOY_*; Build owns the commit-scoped manifest.
 # CURRENT_COMMIT is resolved before this script in the Build stage.
