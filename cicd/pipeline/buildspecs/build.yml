@@ -48,8 +48,28 @@ phases:
             "${CODEBUILD_SRC_DIR:-.}/deployment-decision.env" \
             DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
         fi
+        # CodePipeline OutputArtifacts.BuildArtifact requires a buildspec artifacts
+        # payload. Immutable packages remain in s3://$ARTIFACT_BUCKET/$SERVICE_NAME/<commit>/.
+        SRC_DIR="${CODEBUILD_SRC_DIR:-.}"
+        FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+        printf 'CURRENT_COMMIT=%s\n' "${CURRENT_COMMIT:-unknown}" > "${SRC_DIR}/codepipeline-artifact.txt"
+        if [ ! -f "${SRC_DIR}/deployment-decision.env" ]; then
+          printf '# deployment-decision.env was not produced\n' > "${SRC_DIR}/deployment-decision.env"
+        fi
+        if [ -n "${CICD_FRAMEWORK_DIR:-}" ] && [ ! -d "${SRC_DIR}/${FRAMEWORK_PATH}/scripts" ] && [ -d "${CICD_FRAMEWORK_DIR}/scripts" ]; then
+          mkdir -p "${SRC_DIR}/${FRAMEWORK_PATH}"
+          cp -R "${CICD_FRAMEWORK_DIR}/." "${SRC_DIR}/${FRAMEWORK_PATH}/"
+        fi
+        if [ ! -d "${SRC_DIR}/${FRAMEWORK_PATH}" ]; then
+          mkdir -p "${SRC_DIR}/${FRAMEWORK_PATH}"
+          printf 'placeholder\n' > "${SRC_DIR}/${FRAMEWORK_PATH}/.codepipeline-placeholder"
+        fi
 
+# Required for CodePipeline BuildArtifact. Do not omit: missing artifacts lets
+# the Build action succeed without writing the pipeline artifact store object.
 artifacts:
   files:
-    - '**/*'
+    - codepipeline-artifact.txt
+    - deployment-decision.env
+    - cicd/pipeline/**/*
   discard-paths: no

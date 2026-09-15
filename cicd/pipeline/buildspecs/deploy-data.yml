@@ -42,9 +42,22 @@ phases:
             DATA_ACTION RECOVERY_REQUIRED CURRENT_COMMIT \
             RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE
         fi
+        # Always emit DataPreflightArtifact. Recovery env is optional; staging
+        # the marker guarantees CodePipeline has an S3 object to DOWNLOAD_SOURCE.
+        SRC_DIR="${CODEBUILD_SRC_DIR:-.}"
+        mkdir -p "${SRC_DIR}/.pipeline-data-preflight"
+        printf 'CURRENT_COMMIT=%s\n' "${CURRENT_COMMIT:-}" > "${SRC_DIR}/.pipeline-data-preflight/data-preflight-artifact.txt"
+        for f in data-deployment-variables.env deployment-data-preflight.env deployment-data-recovery.env; do
+          if [ -f "${SRC_DIR}/$f" ]; then
+            cp "${SRC_DIR}/$f" "${SRC_DIR}/.pipeline-data-preflight/"
+          elif [ -f "$f" ]; then
+            cp "$f" "${SRC_DIR}/.pipeline-data-preflight/"
+          fi
+        done
 
+# Required for CodePipeline DataPreflightArtifact. Optional recovery env is
+# copied only when present so CREATE/UPDATE does not fail UPLOAD_ARTIFACTS.
 artifacts:
   files:
-    - '**/deployment-data-preflight.env'
-    - '**/deployment-data-recovery.env'
-  discard-paths: no
+    - .pipeline-data-preflight/**/*
+  discard-paths: yes

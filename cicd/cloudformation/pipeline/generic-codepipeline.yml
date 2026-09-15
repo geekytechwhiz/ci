@@ -760,6 +760,11 @@ Resources:
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
+              - Sid: WritePipelineDataPreflightArtifact
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
               - Sid: PutCfnTemplateUpload
                 Effect: Allow
                 Action:
@@ -1314,6 +1319,10 @@ Resources:
       Description: Package service artifacts, detect deployment changes, publish immutable commit-scoped packages, export DEPLOY_* flags.
       ServiceRole: !GetAtt BuildRole.Arn
       TimeoutInMinutes: 60
+      # CODEPIPELINE is required so the Build action can write OutputArtifacts.BuildArtifact
+      # into ArtifactStore (ArtifactBucketName). Do not switch this to NO_ARTIFACTS or S3:
+      # later stages InputArtifacts: BuildArtifact and DOWNLOAD_SOURCE that object.
+      # Immutable deployment packages still go to s3://<ArtifactBucket>/<ServiceName>/<commit>/.
       Artifacts:
         Type: CODEPIPELINE
       Source:
@@ -1363,6 +1372,27 @@ Resources:
                       "${!CODEBUILD_SRC_DIR}/deployment-decision.env" \
                       DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
                   fi
+                  # CodePipeline OutputArtifacts.BuildArtifact requires a buildspec artifacts
+                  # payload. Without it CodeBuild succeeds but never writes the S3 object,
+                  # and Deploy-Data DOWNLOAD_SOURCE fails with NoSuchKey.
+                  printf 'CURRENT_COMMIT=%s\n' "${!CURRENT_COMMIT:-unknown}" > "${!CODEBUILD_SRC_DIR}/codepipeline-artifact.txt"
+                  if [ ! -f "${!CODEBUILD_SRC_DIR}/deployment-decision.env" ]; then
+                    printf '# deployment-decision.env was not produced\n' > "${!CODEBUILD_SRC_DIR}/deployment-decision.env"
+                  fi
+                  if [ -n "${!CICD_FRAMEWORK_DIR:-}" ] && [ ! -d "${!CODEBUILD_SRC_DIR}/${FrameworkPath}/scripts" ] && [ -d "${!CICD_FRAMEWORK_DIR}/scripts" ]; then
+                    mkdir -p "${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    cp -R "${!CICD_FRAMEWORK_DIR}/." "${!CODEBUILD_SRC_DIR}/${FrameworkPath}/"
+                  fi
+                  if [ ! -d "${!CODEBUILD_SRC_DIR}/${FrameworkPath}" ]; then
+                    mkdir -p "${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
+                    printf 'placeholder\n' > "${!CODEBUILD_SRC_DIR}/${FrameworkPath}/.codepipeline-placeholder"
+                  fi
+          artifacts:
+            files:
+              - codepipeline-artifact.txt
+              - deployment-decision.env
+              - '${FrameworkPath}/**/*'
+            discard-paths: no
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_MEDIUM
@@ -1436,6 +1466,8 @@ Resources:
       Description: Preflight then create, update, or prepare IMPORT recovery of the Data Stack. STOP fails this stage. RECOVERY_REQUIRED prepares a change set and succeeds so approval can run. Does not execute IMPORT or modify DynamoDB table data.
       ServiceRole: !GetAtt DeployDataRole.Arn
       TimeoutInMinutes: 30
+      # CODEPIPELINE is required so DeployData can write OutputArtifacts.DataPreflightArtifact
+      # for Recover-Data (InputArtifacts includes DataPreflightArtifact).
       Artifacts:
         Type: CODEPIPELINE
       Source:
@@ -1477,6 +1509,15 @@ Resources:
               commands:
                 - |
                   set -euo pipefail
+                  mkdir -p "${!CODEBUILD_SRC_DIR}/.pipeline-data-preflight"
+                  printf 'CURRENT_COMMIT=%s\n' "${!CURRENT_COMMIT:-}" > "${!CODEBUILD_SRC_DIR}/.pipeline-data-preflight/data-preflight-artifact.txt"
+                  for f in data-deployment-variables.env deployment-data-preflight.env deployment-data-recovery.env; do
+                    if [ -f "${!CODEBUILD_SRC_DIR}/$f" ]; then
+                      cp "${!CODEBUILD_SRC_DIR}/$f" "${!CODEBUILD_SRC_DIR}/.pipeline-data-preflight/"
+                    elif [ -f "$f" ]; then
+                      cp "$f" "${!CODEBUILD_SRC_DIR}/.pipeline-data-preflight/"
+                    fi
+                  done
                   if [ "${!CODEBUILD_BUILD_SUCCEEDING}" != "1" ]; then
                     echo "Build phase failed; not promoting CodePipeline variables."
                   else
@@ -1485,6 +1526,10 @@ Resources:
                       DATA_ACTION RECOVERY_REQUIRED CURRENT_COMMIT \
                       RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE
                   fi
+          artifacts:
+            files:
+              - '.pipeline-data-preflight/**/*'
+            discard-paths: yes
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -2315,6 +2360,9 @@ Resources:
                   - CreateBuildProject
                   - !Ref BuildProject
                   - !Ref BuildProjectName
+                # BuildArtifact is the CodePipeline artifact-store object produced by
+                # the Build project's buildspec artifacts section. It is not the
+                # immutable deployment prefix in ArtifactBucket.
                 PrimarySource: SourceArtifact
                 EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"SERVICE_NAME","value":"${ServiceName}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ARTIFACT_BUCKET","value":"#{variables.ArtifactBucket}","type":"PLAINTEXT"},{"name":"ENABLE_DATA","value":"${EnableData}","type":"PLAINTEXT"},{"name":"ENABLE_INFRA","value":"${EnableInfra}","type":"PLAINTEXT"},{"name":"ENABLE_APP","value":"${EnableApp}","type":"PLAINTEXT"},{"name":"CI_PATH","value":"${CiPath}","type":"PLAINTEXT"},{"name":"LAST_DEPLOYED_COMMIT_PARAM","value":"/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT","type":"PLAINTEXT"}]'
               # Namespace BuildVariables exposes DEPLOY_DATA / DEPLOY_INFRA /
