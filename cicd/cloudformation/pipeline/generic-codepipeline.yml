@@ -17,12 +17,12 @@ Metadata:
 Description: >
   Generic service CI/CD pipeline. One CodePipeline V2 (QUEUED): Source → Build →
   Deploy-Data → Approve-Data-Recovery → Recover-Data → Deploy-Infra → Validate-SSM →
-  Deploy-App → Smoke-Test → Record-Deployment. Approve-Data-Recovery and Recover-Data
+  Deploy-App → Record-Deployment. Approve-Data-Recovery and Recover-Data
   SKIP unless #{DataDeploymentVariables.RECOVERY_REQUIRED}=true. Data stack owns
   DynamoDB + data SSM. Infra stack owns SQS + infra SSM. Application stack name stays
   {stage}-${ServiceName}. Deploy as stack {stage}-${ServiceName}-cicd.
   Deployment artifacts live in ArtifactBucket under ${ServiceName}/<commit-sha>/.
-  Deploy-Data, Deploy-Infra, Deploy-App, and Smoke-Test skip when the matching
+  Deploy-Data, Deploy-Infra, and Deploy-App skip when the matching
   BuildVariables flag is false (BeforeEntry VariableCheck, Result SKIP).
   Validate-SSM always runs. Record-Deployment writes
   /${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT.
@@ -71,21 +71,6 @@ Parameters:
     Type: String
     Default: PrimaryTable
     Description: CloudFormation logical ID of the primary DynamoDB table in the data stack.
-
-  ApiBaseUrlParameter:
-    Type: String
-    Default: ''
-    Description: Optional full SSM parameter path containing the service API base URL for smoke tests.
-
-  HealthCheckPath:
-    Type: String
-    Default: /health
-    Description: HTTP health endpoint used by the generic smoke test.
-
-  HealthResponseContains:
-    Type: String
-    Default: '"status": "healthy"'
-    Description: Substring that must appear in a successful health response body.
 
   RequiredSsmParameters:
     Type: String
@@ -142,7 +127,7 @@ Parameters:
     Type: String
     Default: 'true'
     AllowedValues: ['true', 'false']
-    Description: When false, Build always exports DEPLOY_APP=false (Smoke-Test also skips).
+    Description: When false, Build always exports DEPLOY_APP=false.
 
   EnableDynamoDb:
     Type: String
@@ -179,7 +164,6 @@ Parameters:
     Description: Expected DynamoDB ownership tag Purpose value used by data preflight/recovery.
 
 Conditions:
-  HasApiBaseUrlParameter: !Not [!Equals [!Ref ApiBaseUrlParameter, '']]
   HasDataTableName: !Not [!Equals [!Ref DataTableName, '']]
   HasOwnershipTagService: !Not [!Equals [!Ref OwnershipTagService, '']]
   HasExternalBuildProject: !Not [!Equals [!Ref BuildProjectName, '']]
@@ -243,7 +227,6 @@ Resources:
                   - !GetAtt DeployInfraProject.Arn
                   - !GetAtt DeployAppProject.Arn
                   - !GetAtt ValidateSsmProject.Arn
-                  - !GetAtt SmokeTestProject.Arn
                   - !GetAtt RecordDeploymentProject.Arn
               - Sid: CloudFormationDeployActions
                 Effect: Allow
@@ -1232,63 +1215,6 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
 
-  SmokeTestRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub '${Stage}-${ServiceName}-smoke-test-role'
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: codebuild.amazonaws.com
-            Action: sts:AssumeRole
-      Tags:
-        - Key: Service
-          Value: !Ref ServiceName
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Stack
-          Value: cicd
-      Policies:
-        - PolicyName: smoke-test
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
-              - Sid: ReadApiBaseUrl
-                Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                Resource: !If
-                  - HasApiBaseUrlParameter
-                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ApiBaseUrlParameter}'
-                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
-              - Sid: ServiceEndpointOutput
-                Effect: Allow
-                Action:
-                  - cloudformation:DescribeStacks
-                Resource: '*'
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:GetObjectVersion
-                Resource:
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
-              - Effect: Allow
-                Action:
-                  - s3:ListBucket
-                  - s3:GetBucketVersioning
-                Resource:
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
-
   RecordDeploymentRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1348,7 +1274,7 @@ Resources:
       TimeoutInMinutes: 60
       # CODEPIPELINE is required so the Build action can write OutputArtifacts.BuildArtifact
       # into ArtifactStore (ArtifactBucketName). Do not switch this to NO_ARTIFACTS or S3:
-      # Deploy-Data, Recover-Data, Deploy-Infra, Deploy-App, and Smoke-Test
+      # Deploy-Data, Recover-Data, Deploy-Infra, and Deploy-App
       # InputArtifacts: BuildArtifact and DOWNLOAD_SOURCE that object.
       # Validate-SSM and Record-Deployment use SourceArtifact (always present from Source).
       # Immutable deployment packages still go to s3://<ArtifactBucket>/<ServiceName>/<commit>/.
@@ -1622,12 +1548,6 @@ Resources:
           - Name: DATA_STACK_NAME
             Type: PLAINTEXT
             Value: !Sub '${Stage}-${ServiceName}-data'
-          - Name: API_BASE_URL_PARAMETER
-            Type: PLAINTEXT
-            Value: !Ref ApiBaseUrlParameter
-          - Name: HEALTH_CHECK_PATH
-            Type: PLAINTEXT
-            Value: !Ref HealthCheckPath
           - Name: CFN_DEPLOY_ROLE_ARN
             Type: PLAINTEXT
             Value: !GetAtt CloudFormationDeployRole.Arn
@@ -2116,125 +2036,6 @@ Resources:
         - Key: Stage
           Value: !Ref Stage
 
-  SmokeTestProject:
-    Type: AWS::CodeBuild::Project
-    Properties:
-      Name: !Sub '${Stage}-${ServiceName}-smoke-test'
-      Description: HTTP health check after application deploy. Does not deploy or delete stacks.
-      ServiceRole: !GetAtt SmokeTestRole.Arn
-      TimeoutInMinutes: 10
-      Artifacts:
-        Type: CODEPIPELINE
-      Source:
-        Type: CODEPIPELINE
-        BuildSpec: !Sub |
-          version: 0.2
-          env:
-            shell: bash
-          phases:
-            install:
-              commands:
-                - |
-                  set -euo pipefail
-                  if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
-                  else
-                    mkdir -p /tmp/cicd-framework
-                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
-                  fi
-                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
-            build:
-              commands:
-                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-smoke-test.sh"
-      Environment:
-        Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_SMALL
-        Image: !Ref CodeBuildImage
-        PrivilegedMode: false
-        EnvironmentVariables:
-          - Name: STAGE
-            Type: PLAINTEXT
-            Value: !Ref Stage
-          - Name: SERVICE_NAME
-            Type: PLAINTEXT
-            Value: !Ref ServiceName
-          - Name: AWS_REGION
-            Type: PLAINTEXT
-            Value: !Ref AWS::Region
-          - Name: ARTIFACT_BUCKET
-            Type: PLAINTEXT
-            Value: !Ref ArtifactBucket
-          - Name: CI_PATH
-            Type: PLAINTEXT
-            Value: !Ref CiPath
-          - Name: FRAMEWORK_PATH
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPath
-          - Name: FRAMEWORK_PREFIX
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPrefix
-          - Name: SSM_PREFIX
-            Type: PLAINTEXT
-            Value: !Sub '/${Stage}/${ServiceName}'
-          - Name: LAST_DEPLOYED_COMMIT_PARAM
-            Type: PLAINTEXT
-            Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
-          - Name: REQUIRED_SSM_PARAMETERS
-            Type: PLAINTEXT
-            Value: !Ref RequiredSsmParameters
-          - Name: DATA_LOGICAL_ID
-            Type: PLAINTEXT
-            Value: !Ref DataLogicalId
-          - Name: DATA_TABLE_NAME
-            Type: PLAINTEXT
-            Value: !Ref DataTableName
-          - Name: OWNERSHIP_TAG_SERVICE
-            Type: PLAINTEXT
-            Value: !If
-              - HasOwnershipTagService
-              - !Ref OwnershipTagService
-              - !Ref ServiceName
-          - Name: OWNERSHIP_TAG_PURPOSE
-            Type: PLAINTEXT
-            Value: !Ref OwnershipTagPurpose
-          - Name: ENABLE_DATA
-            Type: PLAINTEXT
-            Value: !Ref EnableData
-          - Name: ENABLE_INFRA
-            Type: PLAINTEXT
-            Value: !Ref EnableInfra
-          - Name: ENABLE_APP
-            Type: PLAINTEXT
-            Value: !Ref EnableApp
-          - Name: STACK_NAME
-            Type: PLAINTEXT
-            Value: !Sub '${Stage}-${ServiceName}'
-          - Name: INFRA_STACK_NAME
-            Type: PLAINTEXT
-            Value: !Sub '${Stage}-${ServiceName}-infra'
-          - Name: DATA_STACK_NAME
-            Type: PLAINTEXT
-            Value: !Sub '${Stage}-${ServiceName}-data'
-          - Name: API_BASE_URL_PARAMETER
-            Type: PLAINTEXT
-            Value: !Ref ApiBaseUrlParameter
-          - Name: HEALTH_CHECK_PATH
-            Type: PLAINTEXT
-            Value: !Ref HealthCheckPath
-          - Name: HEALTH_RESPONSE_CONTAINS
-            Type: PLAINTEXT
-            Value: !Ref HealthResponseContains
-      Tags:
-        - Key: Service
-          Value: !Ref ServiceName
-        - Key: Stage
-          Value: !Ref Stage
-
   RecordDeploymentProject:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -2584,37 +2385,6 @@ Resources:
                 PrimarySource: BuildArtifact
                 EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ARTIFACT_BUCKET","value":"#{variables.ArtifactBucket}","type":"PLAINTEXT"},{"name":"STACK_NAME","value":"${Stage}-${ServiceName}","type":"PLAINTEXT"},{"name":"CURRENT_COMMIT","value":"#{BuildVariables.CURRENT_COMMIT}","type":"PLAINTEXT"}]'
 
-        - Name: Smoke-Test
-          BeforeEntry:
-            Conditions:
-              - Result: SKIP
-                Rules:
-                  - Name: SmokeTestVariableCheck
-                    RuleTypeId:
-                      Category: Rule
-                      Owner: AWS
-                      Provider: VariableCheck
-                      Version: '1'
-                    Configuration:
-                      Operator: EQ
-                      Value: 'true'
-                      Variable: '#{BuildVariables.DEPLOY_APP}'
-          Actions:
-            - Name: SmokeTest
-              ActionTypeId:
-                Category: Build
-                Owner: AWS
-                Provider: CodeBuild
-                Version: '1'
-              RunOrder: 1
-              InputArtifacts:
-                - Name: BuildArtifact
-              Configuration:
-                ProjectName: !Ref SmokeTestProject
-                PrimarySource: BuildArtifact
-                # HEALTH_RESPONSE_CONTAINS stays on SmokeTestProject env (may contain quotes).
-                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"API_BASE_URL_PARAMETER","value":"${ApiBaseUrlParameter}","type":"PLAINTEXT"},{"name":"HEALTH_CHECK_PATH","value":"${HealthCheckPath}","type":"PLAINTEXT"}]'
-
         - Name: Record-Deployment
           Actions:
             - Name: RecordDeployment
@@ -2701,9 +2471,6 @@ Outputs:
   ValidateSsmProjectName:
     Description: Validate-SSM CodeBuild project
     Value: !Ref ValidateSsmProject
-  SmokeTestProjectName:
-    Description: Smoke-Test CodeBuild project
-    Value: !Ref SmokeTestProject
   RecordDeploymentProjectName:
     Description: Record-Deployment CodeBuild project
     Value: !Ref RecordDeploymentProject
