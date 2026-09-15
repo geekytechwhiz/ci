@@ -558,6 +558,33 @@ Resources:
                   - logs:UntagResource
                   - logs:ListTagsForResource
                 Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+              - Sid: EventBridge
+                Effect: Allow
+                Action:
+                  - events:CreateEventBus
+                  - events:DescribeEventBus
+                  - events:UpdateEventBus
+                  - events:DeleteEventBus
+                  - events:PutRule
+                  - events:DescribeRule
+                  - events:DeleteRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                  - events:ListTargetsByRule
+                  - events:TagResource
+                  - events:UntagResource
+                  - events:ListTagsForResource
+                  - events:ListRuleNamesByTarget
+                  - events:ListRules
+                  - events:ListTargetsByRule
+                  - events:ListEventBuses
+                  - events:ListEventBusTargets
+                  - events:ListEventBusRules
+                  - events:ListEventBusRuleNamesByTarget
+                  - events:ListEventBusRuleNamesByRule
+                  - events:ListEventBusRuleNamesByEventBus
+                  
+                Resource: '*'
 
   CloudFormationRecoverDataRole:
     Type: AWS::IAM::Role

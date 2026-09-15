@@ -4,16 +4,19 @@
 {stage}-workflow-service-infra
         ↓
 SQS  {stage}-workflow-service-events
+EventBus  workflow-service-bus-{stage}
         ↓
 SSM  /{stage}/workflow-service/SQS_QUEUE_URL
      /{stage}/workflow-service/SQS_QUEUE_ARN
+     /{stage}/workflow-service/EVENT_BUS_NAME
+     /{stage}/workflow-service/EVENT_BUS_ARN
         ↓
 {stage}-workflow-service  (application — not this directory)
 ```
 
 This directory is the **infrastructure CloudFormation stack**. It does not contain Lambda or API Gateway.
 
-This is a **minimal POC**. It proves one CodePipeline can deploy a separate infrastructure stack that publishes resource identifiers to SSM for a separate application stack to consume. DynamoDB lives in the **Data Stack** (`../data/`), not here. It does **not** migrate production EventBridge, DynamoDB, or existing ingest queues.
+This is a **minimal POC**. It proves one CodePipeline can deploy a separate infrastructure stack that publishes resource identifiers to SSM for a separate application stack to consume. DynamoDB lives in the **Data Stack** (`../data/`), not here.
 
 Normal CI/CD deploys this stack from CodePipeline stage **Deploy-Infra** using
 `ci/deploy-infra.sh` is used by CodePipeline **Deploy-Infra** (and remains available for manual/emergency deploys). The template is the commit-scoped artifact `workflow-service/<commit-sha>/infra/packaged.yaml`.
@@ -25,9 +28,13 @@ does not deploy the application stack.
 | Resource | Physical name | SSM |
 |----------|---------------|-----|
 | SQS queue | `{stage}-workflow-service-events` | `SQS_QUEUE_URL`, `SQS_QUEUE_ARN` |
-| SSM parameters | `/{stage}/workflow-service/SQS_QUEUE_*` | (this table) |
+| EventBridge bus | `workflow-service-bus-{stage}` (`WorkflowEventsBus`) | `EVENT_BUS_NAME`, `EVENT_BUS_ARN` |
+| EventBridge rule | `{stage}-workflow-service-to-sqs` | (forwards `source: workflow-service` to the queue) |
+| SSM parameters | `/{stage}/workflow-service/SQS_QUEUE_*`, `EVENT_BUS_*` | (this table) |
 
-This stack does **not** create Lambda, API Gateway, EventBridge, DynamoDB, SNS, application IAM roles, or event source mappings. DynamoDB is owned by `{stage}-workflow-service-data`.
+This stack is the **sole CloudFormation owner** of `workflow-service-bus-{stage}`. The bus uses `DeletionPolicy: Retain` so stack delete does not destroy it. If CloudFormation state is lost while the physical bus remains, adopt it with the one-time operator script `recover-event-bus.sh` — never delete or rename the bus to make Deploy-Infra pass. Normal CI/CD (`Deploy-Infra`) must not import; import is denied on that path.
+
+This stack does **not** create Lambda, API Gateway, DynamoDB, SNS, application IAM roles, or event source mappings. DynamoDB is owned by `{stage}-workflow-service-data`.
 
 The queue name `{stage}-workflow-service-events` is distinct from the existing production ingest queue `{stage}-workflow-service-events-ingest`. This POC does not import, rename, or delete production resources.
 
@@ -37,7 +44,8 @@ The queue name `{stage}-workflow-service-events` is distinct from the existing p
 infrastructure/
 ├── serverless.infra.yml    # stack {stage}-workflow-service-infra
 ├── resources/
-│   └── infra.yml           # SQS queue + SSM parameters
+│   └── infra.yml           # SQS, EventBus, rule, SSM parameters
+├── recover-event-bus.sh    # one-time IMPORT of an orphaned EventBus (not CI/CD)
 └── README.md
 ```
 
