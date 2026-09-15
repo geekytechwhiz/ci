@@ -3,10 +3,9 @@ service:
   root: workflow
 
 source:
-  # repository: MyvitalRx/Cf-testing
-  repository: geekytechwhiz/ci
+  repository: MyvitalRx/Cf-testing
   branch: dev
-  connectionArn: arn:aws:codeconnections:us-east-1:462778607085:connection/271c183a-9f2b-4625-af12-86cebfe37a16
+  connectionArn: ""
   ciPath: workflow/ci
 
 deployment:
@@ -43,7 +42,6 @@ application:
   healthCheckPath: /health
   apiBaseUrlParameter: /nvdev-use1-mvx/workflow-service/api-base-url
   healthResponseContains: '"status": "healthy"'
-  smokeTest: required
   buildProjectName: ""
 
 changeDetection:

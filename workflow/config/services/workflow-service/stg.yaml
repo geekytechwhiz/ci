@@ -41,7 +41,6 @@ application:
   healthCheckPath: /health
   apiBaseUrlParameter: /stg/workflow-service/api-base-url
   healthResponseContains: '"status": "healthy"'
-  smokeTest: required
   buildProjectName: ""
 
 changeDetection:

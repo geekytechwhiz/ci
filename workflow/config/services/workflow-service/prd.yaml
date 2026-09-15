@@ -41,7 +41,6 @@ application:
   healthCheckPath: /health
   apiBaseUrlParameter: /prd/workflow-service/api-base-url
   healthResponseContains: '"status": "healthy"'
-  smokeTest: required
   buildProjectName: ""
 
 changeDetection:

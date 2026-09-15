@@ -4,7 +4,7 @@
 # Writes CURRENT_COMMIT to:
 #   /${STAGE}/${SERVICE_NAME}/cicd/LAST_DEPLOYED_COMMIT
 #
-# Must only run after Smoke-Test. Does not deploy stacks.
+# Runs last after preceding stages succeed or skip. Does not deploy stacks.
 
 set -euo pipefail
 

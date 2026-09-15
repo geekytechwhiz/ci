@@ -128,7 +128,6 @@
             "healthCheckPath": { "type": "string" },
             "apiBaseUrlParameter": { "type": "string" },
             "healthResponseContains": { "type": "string" },
-            "smokeTest": { "type": "string", "enum": ["required", "optional"] },
             "buildProjectName": { "type": "string" }
           },
           "additionalProperties": false

@@ -4,16 +4,15 @@ environment:
   name: dev
   awsRegion: us-east-1
 
-github:
-  # Official organization CodeConnections ARN (must be AVAILABLE, not PENDING).
-  connectionArn: arn:aws:codeconnections:us-east-1:462778607085:connection/271c183a-9f2b-4625-af12-86cebfe37a16
+github: 
+  connectionArn: ""
 
 
 artifacts:
   # CodePipeline internal artifact store (Source/Build zips). Not the deployment bucket.
-  pipelineBucket: dev-poc-pipeline-artifacts
+  pipelineBucket: ""
   # Centralized immutable deployment artifacts: <service>/<commit-sha>/...
-  deploymentBucket: dev-poc-artifacts
+  deploymentBucket: ""
   # Optional SSE-KMS for the CodePipeline artifact store. Empty = S3-managed AES256.
   kmsKeyArn: ""
 

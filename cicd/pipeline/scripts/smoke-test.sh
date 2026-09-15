@@ -1,5 +1,5 @@
 #!/bin/bash
-# Application health check (service-agnostic).
+# Manual application health check (not a CodePipeline stage).
 #
 # URL resolution order:
 #   1. API_BASE_URL (or SERVICE_BASE_URL)

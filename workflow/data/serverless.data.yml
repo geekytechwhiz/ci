@@ -16,7 +16,7 @@ provider:
   stackName: ${self:provider.stage}-workflow-service-data
   versionFunctions: false
   deploymentBucket:
-    name: ${self:provider.stage}-mibc-workflow-service-bucket
+    name: ${self:provider.stage}-workflow-service-bucket
     serverSideEncryption: AES256
   tags:
     Service: workflow-service
