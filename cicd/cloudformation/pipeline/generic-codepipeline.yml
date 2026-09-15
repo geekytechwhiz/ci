@@ -11,6 +11,9 @@
 #   (monorepo FrameworkPath or S3 ${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz).
 #
 AWSTemplateFormatVersion: '2010-09-09'
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@2
 Description: >
   Generic service CI/CD pipeline. One CodePipeline V2 (QUEUED): Source → Build →
   Deploy-Data → Approve-Data-Recovery → Recover-Data → Deploy-Infra → Validate-SSM →
@@ -100,7 +103,11 @@ Parameters:
   BuildProjectName:
     Type: String
     Default: ''
-    Description: Existing package-only CodeBuild project name. Leave empty to create ${Stage}-${ServiceName}-build.
+    Description: >
+      Existing package-only CodeBuild project name. Leave empty to create ${Stage}-${ServiceName}-build.
+      An external project must keep the existing exported-variable contract: env.exported-variables
+      DEPLOY_DATA, DEPLOY_INFRA, DEPLOY_APP, CURRENT_COMMIT, assigned in the CodeBuild shell
+      (not only a child process) so Namespace BuildVariables can feed VariableCheck.
 
   GitHubConnectionArn:
     Type: String
@@ -1339,7 +1346,12 @@ Resources:
                   chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
-                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-build.sh"
+                - |
+                  set -euo pipefail
+                  bash "${!CICD_FRAMEWORK_DIR}/scripts/run-build.sh"
+                  source "${!CICD_FRAMEWORK_DIR}/scripts/promote-exported-variables.sh" \
+                    "${!CODEBUILD_SRC_DIR}/deployment-decision.env" \
+                    DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
             post_build:
               commands:
                 - |
@@ -2311,8 +2323,9 @@ Resources:
               # VariableCheck (Result SKIP) and #{BuildVariables.CURRENT_COMMIT}
               # for artifact fetch and Record-Deployment.
               # VariableCheck treats an empty resolved value as a configuration
-              # error ("Variable cannot be empty"), so Build post_build must
-              # source deployment-decision.env into the CodeBuild parent shell.
+              # error ("Variable cannot be empty"). bash run-build.sh cannot
+              # publish exports; the Build command must source
+              # deployment-decision.env into the CodeBuild parent shell.
 
         - Name: Deploy-Data
           BeforeEntry:

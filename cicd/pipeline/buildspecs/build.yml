@@ -30,7 +30,12 @@ phases:
 
   build:
     commands:
-      - "${CICD_SCRIPTS_DIR}/run-build.sh"
+      - |
+        set -euo pipefail
+        "${CICD_SCRIPTS_DIR}/run-build.sh"
+        source "${CICD_FRAMEWORK_DIR:-${CICD_SCRIPTS_DIR:-.}/..}/scripts/promote-exported-variables.sh" \
+          "${CODEBUILD_SRC_DIR:-.}/deployment-decision.env" \
+          DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
 
   post_build:
     commands:

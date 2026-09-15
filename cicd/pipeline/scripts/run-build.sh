@@ -144,8 +144,9 @@ if [ "$need_publish" = "true" ]; then
   "$SCRIPT_DIR/verify-artifacts.sh"
 fi
 
-# Re-write decision env with gated flags. post_build sources this file in the
-# CodeBuild parent shell so CodePipeline VariableCheck receives non-empty values.
+# Re-write decision env with gated flags. The buildspec must source this file
+# in the CodeBuild parent shell (same command as this script, not only a later
+# phase) so CodePipeline VariableCheck receives non-empty values.
 decision_path="$DEPLOYMENT_DECISION_ENV"
 if [ -n "${CODEBUILD_SRC_DIR:-}" ] && [[ "$decision_path" != /* ]]; then
   decision_path="${CODEBUILD_SRC_DIR}/${DEPLOYMENT_DECISION_ENV}"
