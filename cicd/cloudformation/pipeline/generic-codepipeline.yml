@@ -1321,7 +1321,9 @@ Resources:
       TimeoutInMinutes: 60
       # CODEPIPELINE is required so the Build action can write OutputArtifacts.BuildArtifact
       # into ArtifactStore (ArtifactBucketName). Do not switch this to NO_ARTIFACTS or S3:
-      # later stages InputArtifacts: BuildArtifact and DOWNLOAD_SOURCE that object.
+      # Deploy-Data, Recover-Data, Deploy-Infra, Deploy-App, and Smoke-Test
+      # InputArtifacts: BuildArtifact and DOWNLOAD_SOURCE that object.
+      # Validate-SSM and Record-Deployment use SourceArtifact (always present from Source).
       # Immutable deployment packages still go to s3://<ArtifactBucket>/<ServiceName>/<commit>/.
       Artifacts:
         Type: CODEPIPELINE
@@ -1978,6 +1980,12 @@ Resources:
       Description: Validate Data and Infrastructure SSM contracts after both stacks deploy. Does not deploy.
       ServiceRole: !GetAtt ValidateSsmRole.Arn
       TimeoutInMinutes: 10
+      # CODEPIPELINE is required for pipeline InputArtifacts. This project has no
+      # OutputArtifacts; CodePipeline overrides the upload to NO_ARTIFACTS.
+      # PrimarySource is SourceArtifact (same as Record-Deployment), not BuildArtifact:
+      # Validate-SSM always runs and only reads SSM. Depending on BuildArtifact
+      # fails DOWNLOAD_SOURCE with NoSuchKey when that object was never written
+      # or when a later stage is retried on an execution whose Build zip is missing.
       Artifacts:
         Type: CODEPIPELINE
       Source:
@@ -2513,10 +2521,10 @@ Resources:
                 Version: '1'
               RunOrder: 1
               InputArtifacts:
-                - Name: BuildArtifact
+                - Name: SourceArtifact
               Configuration:
                 ProjectName: !Ref ValidateSsmProject
-                PrimarySource: BuildArtifact
+                PrimarySource: SourceArtifact
                 EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"REQUIRED_SSM_PARAMETERS","value":"${RequiredSsmParameters}","type":"PLAINTEXT"},{"name":"SSM_PREFIX","value":"/${Stage}/${ServiceName}","type":"PLAINTEXT"}]'
 
         - Name: Deploy-App

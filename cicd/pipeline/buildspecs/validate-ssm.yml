@@ -1,5 +1,7 @@
 version: 0.2
 # Reference buildspec: Validate-SSM
+# Pipeline PrimarySource is SourceArtifact (not BuildArtifact). This stage
+# only reads SSM and does not produce OutputArtifacts.
 
 env:
   shell: bash
