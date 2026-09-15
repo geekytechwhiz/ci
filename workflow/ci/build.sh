@@ -92,36 +92,78 @@ copy_packaged_template() {
 # SMALL CodeBuild (~3.6 GiB): cap Node heap so the esbuild subprocess has headroom.
 export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=2048}"
 
-echo "Verifying @myvitalrx/mvrx-resource-registry status..."
-node -e "try { require('@myvitalrx/mvrx-resource-registry'); console.log('mvrx-resource-registry OK'); } catch(e) { console.log('mvrx-resource-registry check skipped (not in node_modules)'); }"
-
-
 if command -v free >/dev/null 2>&1; then
   echo "Container memory:"
   free -h || true
 fi
 
-# Serverless Framework 3.x (frameworkVersion: '3.x' in serverless.yml,
-# serverless.data.yml, serverless.infra.yml; package.json pin: ^3.40.0).
-# Bare `npx serverless` from data/ or infrastructure/ has no package.json, so
-# npx downloads latest 4.x and then fails with "No version found for 3.x".
+# Pipeline Build (generic-codepipeline.yml) does not run npm install. Plugins such
+# as serverless-esbuild live in workflow/package.json devDependencies. Using
+# `npx --package serverless` only installs the CLI, which produces:
+#   Serverless plugin "serverless-esbuild" not found
 SERVERLESS_VERSION="${SERVERLESS_VERSION:-3.40.0}"
 SERVERLESS_BIN="$SERVICE_DIR/node_modules/.bin/serverless"
 
-run_serverless() {
-  if [ -x "$SERVERLESS_BIN" ]; then
-    "$SERVERLESS_BIN" "$@"
+install_workflow_npm_deps() {
+  echo "Installing workflow npm dependencies from $SERVICE_DIR ..."
+  # npm omits devDependencies when NODE_ENV=production or npm_config_production=true.
+  local saved_node_env="${NODE_ENV-}"
+  local saved_npm_production="${npm_config_production-}"
+  unset NODE_ENV || true
+  unset npm_config_production || true
+  export NPM_CONFIG_PRODUCTION=false
+
+  if [ -f package-lock.json ]; then
+    npm ci --include=dev --legacy-peer-deps
   else
-    npx --yes --package "serverless@${SERVERLESS_VERSION}" serverless "$@"
+    npm install --include=dev --legacy-peer-deps
+  fi
+
+  unset NPM_CONFIG_PRODUCTION || true
+  if [ -n "$saved_node_env" ]; then
+    export NODE_ENV="$saved_node_env"
+  fi
+  if [ -n "$saved_npm_production" ]; then
+    export npm_config_production="$saved_npm_production"
   fi
 }
 
-echo "Resolving Serverless Framework CLI (required 3.x, pin ${SERVERLESS_VERSION})..."
-if [ -x "$SERVERLESS_BIN" ]; then
-  echo "Using local CLI: $SERVERLESS_BIN"
+assert_serverless_plugins() {
+  local plugin missing=0
+  for plugin in serverless-esbuild serverless-dotenv-plugin serverless-auto-swagger @myvitalrx/mvrx-resource-registry; do
+    if ! PLUGIN="$plugin" node -e "require.resolve(process.env.PLUGIN)"; then
+      echo "ERROR: Serverless plugin not installed: $plugin" >&2
+      missing=1
+    else
+      echo "Plugin OK: $plugin"
+    fi
+  done
+  if [ "$missing" -ne 0 ]; then
+    echo "ERROR: Install dependencies in workflow/ so serverless.yml plugins resolve from node_modules." >&2
+    exit 1
+  fi
+}
+
+if [ -n "${CODEBUILD_BUILD_ID:-}" ] || [ ! -x "$SERVERLESS_BIN" ] || [ ! -d "$SERVICE_DIR/node_modules/serverless-esbuild" ]; then
+  install_workflow_npm_deps
 else
-  echo "Local CLI not found; using npx --package serverless@${SERVERLESS_VERSION} (not unpinned npx serverless)"
+  echo "Using existing node_modules (serverless-esbuild already present)"
 fi
+
+if [ ! -x "$SERVERLESS_BIN" ]; then
+  echo "ERROR: serverless CLI missing at $SERVERLESS_BIN after npm install." >&2
+  echo "ERROR: Do not fall back to npx serverless — that CLI cannot load workflow plugins." >&2
+  exit 1
+fi
+
+assert_serverless_plugins
+
+run_serverless() {
+  "$SERVERLESS_BIN" "$@"
+}
+
+echo "Resolving Serverless Framework CLI (required 3.x, pin ${SERVERLESS_VERSION})..."
+echo "Using local CLI: $SERVERLESS_BIN"
 SLS_VERSION_OUT="$(run_serverless --version)"
 echo "$SLS_VERSION_OUT"
 if ! echo "$SLS_VERSION_OUT" | grep -qE 'Framework Core: 3\.'; then

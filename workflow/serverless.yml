@@ -9,7 +9,7 @@ plugins:
   - serverless-esbuild
   - serverless-dotenv-plugin
   - serverless-auto-swagger
-  - serverless-offline
+  # - serverless-offline
   - '@myvitalrx/mvrx-resource-registry'
 
 package: ${file(../infra/serverless/package.yml)}
