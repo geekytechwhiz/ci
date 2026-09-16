@@ -83,15 +83,17 @@ Metadata:
       - do not require deploy-pipeline.sh before create or pipeline start
       - do not invent service DynamoDB/SQS/EventBus names
       - ArtifactBucketName, ArtifactBucket, GitHubConnectionArn are external prereqs
+      - CodeBuild EnvironmentVariables Name unique per project; UpdateProject 400 on dup
+      - EnableSsmValidation defaults false; SsmPrefix/RequiredSsmParameters required only when true
     ref:
       - cicd/README.md
 Description: >
   Generic service CI/CD pipeline. One CodePipeline V2 (QUEUED): Source → Build →
   Deploy-Data → Approve-Data-Recovery → Recover-Data → Deploy-Infra → Validate-SSM →
-  Deploy-App → Record-Deployment. Create or update this stack directly in
-  CloudFormation; deploy-pipeline.sh is optional. Artifact buckets and the
-  GitHub CodeConnections connection are external prerequisites. Record-Deployment
-  writes /{Stage}/{ServiceName}/cicd/LAST_DEPLOYED_COMMIT.
+  Deploy-App → Smoke-Test → Record-Deployment. Create or update this stack
+  directly in CloudFormation; deploy-pipeline.sh is optional. Artifact buckets
+  and the GitHub CodeConnections connection are external prerequisites.
+  Record-Deployment writes /{Stage}/{ServiceName}/cicd/LAST_DEPLOYED_COMMIT.
 
 Parameters:
   ServiceName:
@@ -126,12 +128,14 @@ Parameters:
 
   EnableSsmValidation:
     Type: String
-    Default: 'true'
+    Default: 'false'
     AllowedValues: ['true', 'false']
     Description: >
-      When true, Validate-SSM checks the service SSM contract. Requires
-      SsmPrefix and RequiredSsmParameters. When false, Validate-SSM skips
-      intentionally and does not treat omitted configuration as success.
+      Opt-in SSM contract gate. Default false: Validate-SSM skips
+      intentionally and SsmPrefix/RequiredSsmParameters are not required.
+      When true, Validate-SSM checks the service SSM contract and requires
+      SsmPrefix and RequiredSsmParameters. Omitted configuration is not
+      treated as success.
 
   RequiredSsmParameters:
     Type: String
@@ -463,6 +467,7 @@ Resources:
                   - !GetAtt DeployInfraProject.Arn
                   - !GetAtt DeployAppProject.Arn
                   - !GetAtt ValidateSsmProject.Arn
+                  - !GetAtt SmokeTestProject.Arn
                   - !GetAtt RecordDeploymentProject.Arn
               - Sid: ValidateTemplateUnscoped
                 Effect: Allow
@@ -539,25 +544,7 @@ Resources:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
-                  - !If
-                    - HasSsmPrefix
-                    - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/*'
-                    - !Ref AWS::NoValue
-                  - !If
-                    - HasResolvedResourceNamePrefix
-                    - !Sub
-                      - 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefix}/${ServiceName}/*'
-                      - Prefix: !If
-                          - HasResourceNamePrefix
-                          - !Ref ResourceNamePrefix
-                          - !If
-                            - HasRegionShortCode
-                            - !Sub '${PlatformCode}${Stage}-${RegionShortCode}-${ProjectCode}'
-                            - !Sub
-                              - '${PlatformCode}${Stage}-${RegionShort}-${ProjectCode}'
-                              - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
-                    - !Ref AWS::NoValue
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/*'
               - Sid: PipelineArtifactBucket
                 Effect: Allow
                 Action:
@@ -651,6 +638,10 @@ Resources:
                   - s3:GetObjectVersion
                 Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
               - Sid: SsmContract
+                # Service contract writes use SsmPrefix (example /nvdev-use1-mvx/my-service).
+                # /${Stage}/${ServiceName}/* remains only for leftover App plugin parameters
+                # published under the pipeline identity path. Validate-SSM does not use it.
+                # CI/CD execution state is /${Stage}/${ServiceName}/cicd/* on other roles.
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
@@ -1817,6 +1808,78 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
 
+  SmokeTestRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Read-only health check of the deployed API. Does not mutate infrastructure.
+        must:
+          - no ssm:PutParameter/DeleteParameter
+          - discover URL from CloudFormation outputs or RestApi id, not invented SSM
+    Properties:
+      RoleName: !Sub '${Stage}-${ServiceName}-smoke-test-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Stack
+          Value: cicd
+      Policies:
+        - PolicyName: smoke-test
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Sid: DescribeAppStack
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:ListStackResources
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}/*'
+              - Sid: DescribeStacksUnscoped
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackResources
+                Resource: '*'
+              - Sid: OptionalExplicitApiUrlParameter
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !If
+                  - HasSsmPrefix
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/*'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/smoke-test-disabled'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
+
   RecordDeploymentRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1994,7 +2057,7 @@ Resources:
                   {
                     "service": "${!SERVICE_NAME}",
                     "pipelineServiceName": "${!SERVICE_NAME}",
-                    "applicationServiceName": "workflow-service",
+                    "applicationServiceName": "${!APPLICATION_SERVICE_NAME:-}",
                     "stage": "${!STAGE}",
                     "commit": "${!CURRENT_COMMIT}",
                     "artifactBucket": "${!ARTIFACT_BUCKET}",
@@ -2090,6 +2153,10 @@ Resources:
           - Name: CI_PATH
             Type: PLAINTEXT
             Value: !Ref CiPath
+          # CodeBuild rejects duplicate EnvironmentVariables names (InvalidInputException).
+          - Name: FRAMEWORK_PATH
+            Type: PLAINTEXT
+            Value: cicd/pipeline
           - Name: SSM_PREFIX
             Type: PLAINTEXT
             Value: !If
@@ -2131,9 +2198,6 @@ Resources:
                 - !Sub
                   - '${PlatformCode}${Stage}-${RegionShort}-${ProjectCode}'
                   - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
-          - Name: FRAMEWORK_PATH
-            Type: PLAINTEXT
-            Value: cicd/pipeline
       Tags:
         - Key: Service
           Value: !Ref ServiceName
@@ -2652,8 +2716,10 @@ Resources:
         must:
           - keep PrimarySource SourceArtifact so retries work without BuildArtifact
           - use repository cicd/pipeline framework; do not download S3 latest
-          - require ENABLE_SSM_VALIDATION, SSM_PREFIX, and leaf names; never skip as success
+          - EnableSsmValidation defaults false (skip). When true, require SSM_PREFIX and leaf names; never skip as success
           - keep IAM scoped to SsmPrefix, not /{Stage}/{ServiceName}
+          - env.shell bash; CodeBuild standard:7.0 default /bin/sh is dash and rejects pipefail with exit 2
+          - BuildSpec is a literal block, not !Sub, so bash ${VAR} is not rewritten
     Properties:
       Name: !Sub '${Stage}-${ServiceName}-validate-ssm'
       Description: Validate Data and Infrastructure SSM contracts after both stacks deploy. Does not deploy.
@@ -2669,6 +2735,9 @@ Resources:
         Type: CODEPIPELINE
       Source:
         Type: CODEPIPELINE
+        # Literal block (not !Sub): bash ${VAR} must reach CodeBuild unaltered.
+        # env.shell bash is required: standard:7.0 default /bin/sh is dash,
+        # which rejects `set -o pipefail` with exit status 2.
         BuildSpec: |
           version: 0.2
           env:
@@ -2679,6 +2748,7 @@ Resources:
                 - |
                   set -euo pipefail
                   FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+                  export FRAMEWORK_ALLOW_S3_FALLBACK=false
                   if [ ! -f "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh" ]; then
                     echo "[SSM] ERROR repository framework not found at ${FRAMEWORK_PATH}"
                     echo "[SSM] Validate-SSM requires cicd/pipeline from SourceArtifact."
@@ -2726,21 +2796,21 @@ Resources:
           - Name: ENABLE_SSM_VALIDATION
             Type: PLAINTEXT
             Value: !Ref EnableSsmValidation
-          - Name: SSM_PREFIX
+          - Name: FRAMEWORK_ALLOW_S3_FALLBACK
             Type: PLAINTEXT
-            Value: !If
-              - HasSsmPrefix
-              - !Ref SsmPrefix
-              - ''
+            Value: 'false'
           - Name: LAST_DEPLOYED_COMMIT_PARAM
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
           - Name: REQUIRED_SSM_PARAMETERS
             Type: PLAINTEXT
             Value: !Ref RequiredSsmParameters
-          - Name: DATA_TABLE_NAME
+          - Name: SSM_PREFIX
             Type: PLAINTEXT
-            Value: !Ref DataTableName
+            Value: !If
+              - HasSsmPrefix
+              - !Ref SsmPrefix
+              - ''
           - Name: OWNERSHIP_TAG_SERVICE
             Type: PLAINTEXT
             Value: !If
@@ -2785,8 +2855,111 @@ Resources:
         - Key: Stage
           Value: !Ref Stage
 
+  SmokeTestProject:
+    Type: AWS::CodeBuild::Project
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Health-check the deployed API after Deploy-App. Does not deploy.
+        must:
+          - keep PrimarySource SourceArtifact
+          - skip explicitly when ENABLE_APP=false
+          - fail on non-2xx; bounded retries
+          - env.shell bash; literal BuildSpec, not !Sub
+    Properties:
+      Name: !Sub '${Stage}-${ServiceName}-smoke-test'
+      Description: HTTP health check against the deployed application. Does not deploy.
+      ServiceRole: !GetAtt SmokeTestRole.Arn
+      TimeoutInMinutes: 10
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          env:
+            shell: bash
+          phases:
+            pre_build:
+              commands:
+                - |
+                  set -euo pipefail
+                  FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+                  export FRAMEWORK_ALLOW_S3_FALLBACK=false
+                  if [ ! -f "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh" ]; then
+                    echo "[SMOKE] ERROR repository framework not found at ${FRAMEWORK_PATH}"
+                    exit 1
+                  fi
+                  source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+                  echo "[SMOKE] ENABLE_APP=${ENABLE_APP:-unset}"
+                  echo "[SMOKE] AWS_REGION=${AWS_REGION:-unset}"
+                  echo "[SMOKE] APP_STACK_NAME=${APP_STACK_NAME:-${STACK_NAME:-unset}}"
+            build:
+              commands:
+                - "${CICD_SCRIPTS_DIR}/run-smoke-test.sh"
+            post_build:
+              commands:
+                - echo "[SMOKE] Smoke-Test finished"
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Ref CodeBuildImage
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: STAGE
+            Type: PLAINTEXT
+            Value: !Ref Stage
+          - Name: SERVICE_NAME
+            Type: PLAINTEXT
+            Value: !Ref ServiceName
+          - Name: AWS_REGION
+            Type: PLAINTEXT
+            Value: !Ref AWS::Region
+          - Name: ARTIFACT_BUCKET
+            Type: PLAINTEXT
+            Value: !Ref ArtifactBucket
+          - Name: CI_PATH
+            Type: PLAINTEXT
+            Value: !Ref CiPath
+          - Name: FRAMEWORK_PATH
+            Type: PLAINTEXT
+            Value: cicd/pipeline
+          - Name: FRAMEWORK_ALLOW_S3_FALLBACK
+            Type: PLAINTEXT
+            Value: 'false'
+          - Name: ENABLE_APP
+            Type: PLAINTEXT
+            Value: !Ref EnableApp
+          - Name: HEALTH_CHECK_PATH
+            Type: PLAINTEXT
+            Value: /health
+          - Name: SSM_PREFIX
+            Type: PLAINTEXT
+            Value: !If
+              - HasSsmPrefix
+              - !Ref SsmPrefix
+              - ''
+          - Name: STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}'
+          - Name: APP_STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}'
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Stage
+          Value: !Ref Stage
+
   RecordDeploymentProject:
     Type: AWS::CodeBuild::Project
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Record LAST_* only after App/Smoke succeed. Uses repository script, not !Sub bash.
+        must:
+          - keep PrimarySource SourceArtifact so retries work without BuildArtifact
+          - write CI/CD state under /{Stage}/{ServiceName}/cicd, not SsmPrefix
+          - never advance LAST_DEPLOYED_COMMIT on failure
+          - env.shell bash; literal BuildSpec, not !Sub
     Properties:
       Name: !Sub '${Stage}-${ServiceName}-record-deployment'
       Description: Record the current source commit as LAST_DEPLOYED_COMMIT after a successful pipeline. Does not deploy.
@@ -2796,134 +2969,32 @@ Resources:
         Type: CODEPIPELINE
       Source:
         Type: CODEPIPELINE
-        BuildSpec: !Sub |
+        BuildSpec: |
           version: 0.2
+          env:
+            shell: bash
           phases:
-            build:
+            pre_build:
               commands:
                 - |
                   set -euo pipefail
-
-                  on_failure() {
-                    rc=$?
-                    aws ssm put-parameter --name "${!CURRENT_EXECUTION_STATUS_PARAM}" --type String --value "FAILED" --overwrite || true
-                    aws ssm put-parameter --name "${!CURRENT_EXECUTION_STAGE_PARAM}" --type String --value "Record-Deployment" --overwrite || true
-                    exit "$rc"
-                  }
-                  trap on_failure EXIT
-
-                  : "${!CURRENT_COMMIT:?CURRENT_COMMIT must be supplied by BuildVariables}"
-                  PREFIX="${!SERVICE_NAME}/${!CURRENT_COMMIT}"
-                  for f in data infra app; do
-                    case "$f" in
-                      data) enabled="${!ENABLE_DATA}" ;;
-                      infra) enabled="${!ENABLE_INFRA}" ;;
-                      app) enabled="${!ENABLE_APP}" ;;
-                    esac
-                    if [ "${!enabled}" = "true" ]; then
-                      key="${!PREFIX}/$f/packaged.yaml"
-                      aws s3api head-object --bucket "${!ARTIFACT_BUCKET}" --key "$key" >/dev/null
-                      echo "[RECORD] verified artifact: s3://${!ARTIFACT_BUCKET}/$key"
-                    fi
-                  done
-                  NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-                  ARTIFACT_URI="s3://${!ARTIFACT_BUCKET}/${!PREFIX}/"
-
-                  # CURRENT_EXECUTION_* describes this pipeline execution.
-                  # LAST_* is only advanced after the complete deployment path succeeds.
-                  aws ssm put-parameter --name "${!CURRENT_EXECUTION_COMMIT_PARAM}" --type String --value "${!CURRENT_COMMIT}" --overwrite
-                  aws ssm put-parameter --name "${!CURRENT_EXECUTION_STAGE_PARAM}" --type String --value "Record-Deployment" --overwrite
-                  aws ssm put-parameter --name "${!CURRENT_EXECUTION_STATUS_PARAM}" --type String --value "SUCCESS" --overwrite
-                  aws ssm put-parameter --name "${!CURRENT_EXECUTION_TIME_PARAM}" --type String --value "$NOW" --overwrite
-
-                  # ------------------------------------------------------------
-                  # Deployment verification gate
-                  # ------------------------------------------------------------
-                  # LAST_* is advanced only after every enabled target stack is verified.
-                  EVIDENCE_FILE="$(mktemp)"
-                  VERIFICATION_FILE="$(mktemp)"
-                  printf '%s\n' '{}' > "${!EVIDENCE_FILE}"
-
-                  verify_stack() {
-                    stack_var="$1"
-                    artifact_uri="$2"
-                    enabled_var="$3"
-
-                    if [ "$enabled_var" != "true" ]; then
-                      return 0
-                    fi
-
-                    case "$stack_var" in
-                      DATA_STACK_NAME) stack_name="$DATA_STACK_NAME" ;;
-                      INFRA_STACK_NAME) stack_name="$INFRA_STACK_NAME" ;;
-                      APP_STACK_NAME) stack_name="$APP_STACK_NAME" ;;
-                      *) echo "[VERIFY] unknown stack variable: $stack_var" >&2; return 1 ;;
-                    esac
-
-                    echo "[VERIFY] stack=$stack_name expected_artifact=$artifact_uri"
-
-                    stack_status="$(aws cloudformation describe-stacks                       --stack-name "${!stack_name}"                       --query 'Stacks[0].StackStatus'                       --output text)"
-
-                    case "${!stack_status}" in
-                      CREATE_COMPLETE|UPDATE_COMPLETE|IMPORT_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
-                        ;;
-                      *)
-                        echo "[VERIFY] stack=${!stack_name} invalid status=${!stack_status}" >&2
-                        return 1
-                        ;;
-                    esac
-
-                    python3 - "${!EVIDENCE_FILE}" "${!stack_name}" "${!stack_status}" "${!artifact_uri}" "${!CURRENT_COMMIT}" <<'PY'
-                      import json, sys
-                      path, stack, status, artifact, commit = sys.argv[1:]
-                      with open(path) as f:
-                        evidence = json.load(f)
-                      evidence[stack] = {
-                        "stackStatus": status,
-                        "expectedArtifact": artifact,
-                        "commit": commit,
-                        "verified": True
-                      }
-                      with open(path, "w") as f:
-                        json.dump(evidence, f, separators=(",", ":"))
-                  PY
-                  }
-
-                  verify_stack "DATA_STACK_NAME" "s3://${!ARTIFACT_BUCKET}/${!PREFIX}data/packaged.yaml" "${!ENABLE_DATA}"
-                  verify_stack "INFRA_STACK_NAME" "s3://${!ARTIFACT_BUCKET}/${!PREFIX}infra/packaged.yaml" "${!ENABLE_INFRA}"
-                  verify_stack "APP_STACK_NAME" "s3://${!ARTIFACT_BUCKET}/${!PREFIX}app/packaged.yaml" "${!ENABLE_APP}"
-
-                  VERIFICATION_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-                  python3 - "${!EVIDENCE_FILE}" "${!VERIFICATION_FILE}" "${!CURRENT_COMMIT}" "${!VERIFICATION_TIME}" <<'PY'
-                    import json, sys
-                    evidence_path, verification_path, commit, verified_at = sys.argv[1:]
-                    with open(evidence_path) as f:
-                      stacks = json.load(f)
-                    result = {
-                      "verified": True,
-                      "commit": commit,
-                      "verifiedAt": verified_at,
-                      "stacks": stacks
-                    }
-                    with open(verification_path, "w") as f:
-                      json.dump(result, f, separators=(",", ":"))
-                  PY
-
-                  aws ssm put-parameter                     --name "${!DEPLOYMENT_EVIDENCE_PARAM}"                     --type String                     --value "$(cat "${!EVIDENCE_FILE}")"                     --overwrite
-
-                  aws ssm put-parameter                     --name "${!DEPLOYMENT_VERIFICATION_PARAM}"                     --type String                     --value "$(cat "${!VERIFICATION_FILE}")"                     --overwrite
-
-                  aws ssm put-parameter --name "${!LAST_DEPLOYED_COMMIT_PARAM}" --type String --value "${!CURRENT_COMMIT}" --overwrite
-                  aws ssm put-parameter --name "${!LAST_DEPLOYED_ARTIFACT_PARAM}" --type String --value "${!ARTIFACT_URI}" --overwrite
-                  aws ssm put-parameter --name "${!LAST_DEPLOYMENT_STATUS_PARAM}" --type String --value SUCCESS --overwrite
-                  aws ssm put-parameter --name "${!LAST_DEPLOYMENT_TIME_PARAM}" --type String  --overwrite
-                  printf 'DEPLOYMENT_STATUS=SUCCESS\nDEPLOYED_COMMIT=%s\nDEPLOYED_ARTIFACT=%s\n' "${!CURRENT_COMMIT}" "${!ARTIFACT_URI}" > deployment-status.env
+                  FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+                  source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+                  echo "STAGE=${STAGE:?} CURRENT_COMMIT=${CURRENT_COMMIT:-<unset>}"
+            build:
+              commands:
+                - "${CICD_SCRIPTS_DIR}/run-record-deployment.sh"
             post_build:
-              commands: []
+              commands:
+                - |
+                  if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
+                    echo "Record-Deployment failed; LAST_DEPLOYED_COMMIT was not updated"
+                    exit 1
+                  fi
+                  echo "Record-Deployment finished"
           artifacts:
             files:
               - deployment-status.env
-
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -3049,7 +3120,7 @@ Resources:
             - HasSsmPrefix
             - !Ref SsmPrefix
             - ''
-          Description: Authoritative service SSM contract prefix from stack parameter SsmPrefix. Empty is not rewritten as /{Stage}/{ServiceName}.
+          Description: Authoritative service SSM contract prefix from stack parameter SsmPrefix. Empty is not rewritten as /{Stage}/{ServiceName}. Validate-SSM runtime SSM_PREFIX comes only from this pipeline variable.
       ArtifactStore:
         Type: S3
         Location: !Ref ArtifactBucketName
@@ -3255,7 +3326,7 @@ Resources:
               Configuration:
                 ProjectName: !Ref ValidateSsmProject
                 PrimarySource: SourceArtifact
-                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"SERVICE_NAME","value":"${ServiceName}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ENABLE_SSM_VALIDATION","value":"${EnableSsmValidation}","type":"PLAINTEXT"},{"name":"SSM_PREFIX","value":"#{variables.SsmPrefix}","type":"PLAINTEXT"},{"name":"RESOURCE_NAME_PREFIX","value":"#{variables.ResourceNamePrefix}","type":"PLAINTEXT"}]'
+                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"SERVICE_NAME","value":"${ServiceName}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"SSM_PREFIX","value":"#{variables.SsmPrefix}","type":"PLAINTEXT"},{"name":"RESOURCE_NAME_PREFIX","value":"#{variables.ResourceNamePrefix}","type":"PLAINTEXT"}]'
 
         - Name: Deploy-App
           BeforeEntry:
@@ -3287,6 +3358,37 @@ Resources:
                 ProjectName: !Ref DeployAppProject
                 PrimarySource: SourceArtifact
                 EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"SERVICE_NAME","value":"${ServiceName}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ARTIFACT_BUCKET","value":"#{variables.ArtifactBucket}","type":"PLAINTEXT"},{"name":"RESOURCE_NAME_PREFIX","value":"#{variables.ResourceNamePrefix}","type":"PLAINTEXT"},{"name":"SSM_PREFIX","value":"#{variables.SsmPrefix}","type":"PLAINTEXT"},{"name":"STACK_NAME","value":"${Stage}-${ServiceName}","type":"PLAINTEXT"},{"name":"CURRENT_COMMIT","value":"#{BuildVariables.CURRENT_COMMIT}","type":"PLAINTEXT"}]'
+
+
+        - Name: Smoke-Test
+          BeforeEntry:
+            Conditions:
+              - Result: SKIP
+                Rules:
+                  - Name: SmokeTestVariableCheck
+                    RuleTypeId:
+                      Category: Rule
+                      Owner: AWS
+                      Provider: VariableCheck
+                      Version: '1'
+                    Configuration:
+                      Operator: EQ
+                      Value: 'true'
+                      Variable: '#{BuildVariables.DEPLOY_APP}'
+          Actions:
+            - Name: SmokeTest
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ProjectName: !Ref SmokeTestProject
+                PrimarySource: SourceArtifact
+                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"SERVICE_NAME","value":"${ServiceName}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ENABLE_APP","value":"${EnableApp}","type":"PLAINTEXT"},{"name":"STACK_NAME","value":"${Stage}-${ServiceName}","type":"PLAINTEXT"},{"name":"APP_STACK_NAME","value":"${Stage}-${ServiceName}","type":"PLAINTEXT"},{"name":"SSM_PREFIX","value":"#{variables.SsmPrefix}","type":"PLAINTEXT"},{"name":"CURRENT_COMMIT","value":"#{BuildVariables.CURRENT_COMMIT}","type":"PLAINTEXT"}]'
 
         - Name: Record-Deployment
           Actions:
@@ -3384,6 +3486,9 @@ Outputs:
   ValidateSsmProjectName:
     Description: Validate-SSM CodeBuild project
     Value: !Ref ValidateSsmProject
+  SmokeTestProjectName:
+    Description: Smoke-Test CodeBuild project
+    Value: !Ref SmokeTestProject
   RecordDeploymentProjectName:
     Description: Record-Deployment CodeBuild project
     Value: !Ref RecordDeploymentProject

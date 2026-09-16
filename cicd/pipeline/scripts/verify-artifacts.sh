@@ -42,16 +42,16 @@ if [ "$need_data" = false ] && [ "$need_infra" = false ] && [ "$need_app" = fals
   [ "$ENABLE_APP" = "true" ] && [ -f "$TEMPLATE" ] && need_app=true
 fi
 
-if [ "$need_app" = true ] && [ ! -f "$TEMPLATE" ]; then
-  echo "ERROR: app/packaged.yaml not found (application artifact)"
-  exit 1
-fi
 if [ "$need_data" = true ] && [ ! -f "$DATA_TEMPLATE" ]; then
-  echo "ERROR: data/packaged.yaml not found (data artifact)"
+  echo "ERROR: data/packaged.yaml not found (data artifact)" >&2
   exit 1
 fi
 if [ "$need_infra" = true ] && [ ! -f "$INFRA_TEMPLATE" ]; then
-  echo "ERROR: infra/packaged.yaml not found (infrastructure artifact)"
+  echo "ERROR: infra/packaged.yaml not found (infrastructure artifact)" >&2
+  exit 1
+fi
+if [ "$need_app" = true ] && [ ! -f "$TEMPLATE" ]; then
+  echo "ERROR: app/packaged.yaml not found (application artifact)" >&2
   exit 1
 fi
 
@@ -61,8 +61,20 @@ BUCKET="$(environment_artifact_bucket)"
 echo "Using ARTIFACT_BUCKET: $BUCKET"
 
 if [ "$need_app" = true ]; then
-  echo "Extracting S3 keys from application template..."
-  TEMPLATE_FILE="$TEMPLATE" node <<'NODE' > /tmp/s3keys.txt
+  echo "Verifying Lambda ZIP keys from application template and discovery metadata..."
+  keys_file="$(mktemp /tmp/lambda-s3keys.XXXXXX)"
+  if [ -f app/.serverless/lambda-artifacts.json ]; then
+    PREFIX="$(environment_artifact_prefix "${CURRENT_COMMIT:-}")" \
+    LAMBDA_FILE="app/.serverless/lambda-artifacts.json" node -e '
+      const fs = require("fs");
+      const data = JSON.parse(fs.readFileSync(process.env.LAMBDA_FILE, "utf8"));
+      const prefix = process.env.PREFIX || "";
+      for (const art of data.artifacts || []) {
+        console.log(prefix ? `${prefix}/app/${art.zipName}` : art.zipName);
+      }
+    ' > "$keys_file"
+  else
+    TEMPLATE_FILE="$TEMPLATE" node <<'NODE' > "$keys_file"
 const fs = require('fs');
 const template = fs.readFileSync(process.env.TEMPLATE_FILE, 'utf8');
 const keys = new Set();
@@ -77,8 +89,9 @@ for (const line of lines) {
 }
 for (const key of [...keys].sort()) console.log(key);
 NODE
+  fi
 
-  if [ -s /tmp/s3keys.txt ]; then
+  if [ -s "$keys_file" ]; then
     echo "Checking uploaded Lambda artifacts in s3://${BUCKET} ..."
     missing=0
     while read -r key; do
@@ -90,14 +103,16 @@ NODE
         echo "MISSING"
         missing=1
       fi
-    done < /tmp/s3keys.txt
+    done < "$keys_file"
+    rm -f "$keys_file"
     if [ "$missing" -ne 0 ]; then
       echo "ERROR: One or more Lambda artifacts are missing"
       exit 1
     fi
   else
-    echo "ERROR: No S3Key entries found in application packaged.yaml"
-    echo "ERROR: The application template must reference uploaded Lambda ZIP objects"
+    rm -f "$keys_file"
+    echo "ERROR: No Lambda ZIP keys found in application packaged.yaml or lambda-artifacts.json"
+    echo "ERROR: Discovery does not use .serverless/s3keys.txt"
     exit 1
   fi
 fi

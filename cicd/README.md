@@ -16,7 +16,7 @@ The Common CI/CD CloudFormation template is the source of truth. After the stack
                                 │
                          CodePipeline
                                 │
-              Build → Deploy-Data → Deploy-Infra → Validate-SSM → Deploy-App → Record-Deployment
+              Build → Deploy-Data → Deploy-Infra → Validate-SSM → Deploy-App → Smoke-Test → Record-Deployment
 ```
 
 Data Preflight runs inside Deploy-Data. Approve-Data-Recovery and Recover-Data run only when `RECOVERY_REQUIRED=true`.
@@ -33,9 +33,9 @@ DevOps creates or updates the Common stack **directly** in CloudFormation. Do no
 5. Wait for `CREATE_COMPLETE` or `UPDATE_COMPLETE`.
 6. Open CodePipeline (`{Stage}-{ServiceName}-pipeline`).
 7. Start the pipeline manually (Release change). Stages themselves stay automated.
-8. Monitor Source → Build → Deploy-Data → Deploy-Infra → Validate-SSM → Deploy-App → Record-Deployment.
+8. Monitor Source → Build → Deploy-Data → Deploy-Infra → Validate-SSM → Deploy-App → Smoke-Test → Record-Deployment.
 
-Do **not** manually run `build.sh`, Data Preflight, Deploy-Data, Deploy-Infra, Validate-SSM, Deploy-App, or Record-Deployment. Those are CodePipeline/CodeBuild responsibilities.
+Do **not** manually run `build.sh`, Data Preflight, Deploy-Data, Deploy-Infra, Validate-SSM, Deploy-App, Smoke-Test, or Record-Deployment. Those are CodePipeline/CodeBuild responsibilities.
 
 Example CLI (same stack definition as the console):
 
@@ -58,7 +58,8 @@ aws cloudformation deploy \
     ArtifactBucketName=EXISTING_PIPELINE_ARTIFACT_BUCKET \
     ArtifactBucket=EXISTING_DEPLOYMENT_ARTIFACT_BUCKET \
     ResourceNamePrefix=nvdev-use1-mvx \
-    CiPath=workflow/ci
+    CiPath=workflow/ci \
+    EnableSsmValidation=false
 ```
 
 A parameter file example is `cicd/cloudformation/pipeline/manual-stack-parameters.example.json`.
@@ -117,11 +118,13 @@ Not required before stack create:
 |-----------|---------|--------|
 | `ResourceNamePrefix` | `nvdev-use1-mvx` | Propagated to CodeBuild as `RESOURCE_NAME_PREFIX`. Empty derives `{PlatformCode}{Stage}-{RegionShortCode}-{ProjectCode}`. |
 | `CiPath` | `workflow/ci` | Service packaging hooks |
-| `SsmPrefix` | `/nvdev-use1-mvx/workflow-service` | Application SSM contract. Empty derives `/{ResourceNamePrefix}/{ServiceName}` from pipeline identity — set this explicitly when `ServiceName` is not the Serverless service name. |
+| `SsmPrefix` | `/nvdev-use1-mvx/workflow-service` | Authoritative application SSM contract. Required when `EnableSsmValidation` is true. Empty is not rewritten as `/{Stage}/{ServiceName}` or `/{ResourceNamePrefix}/{ServiceName}`. |
+| `EnableSsmValidation` | `false` | Default false. Validate-SSM skips unless you opt in. When true, also set `SsmPrefix` and `RequiredSsmParameters`. |
+| `RequiredSsmParameters` | `TABLE_NAME,TABLE_ARN,STREAM_ARN,SQS_QUEUE_URL,SQS_QUEUE_ARN,EVENT_BUS_NAME,EVENT_BUS_ARN` | Leaf names only. Do not include the prefix. Required only when `EnableSsmValidation` is true. |
 
 ### Optional / derived
 
-`PipelineName` empty → `{Stage}-{ServiceName}-pipeline`. `PlatformCode` default `nv`. `ProjectCode` default `mvx`. `RegionShortCode` empty → mapping for `AWS::Region`. Feature toggles default `true`.
+`PipelineName` empty → `{Stage}-{ServiceName}-pipeline`. `PlatformCode` default `nv`. `ProjectCode` default `mvx`. `RegionShortCode` empty → mapping for `AWS::Region`. Feature toggles default `true`. `EnableSsmValidation` defaults `false`. Existing stacks keep previous values, so an earlier `true` must be set to `false` on the next update.
 
 The Common stack must **not** be given individual workflow-service resource names (`…-db`, `…-events`, `…-bus`). The service build produces those from `RESOURCE_NAME_PREFIX` plus service suffixes.
 

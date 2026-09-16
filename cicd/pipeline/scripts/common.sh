@@ -8,7 +8,12 @@ set -euo pipefail
 : "${SERVICE_NAME:?SERVICE_NAME must be set}"
 
 STAGE="${STAGE:-}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+AWS_REGION="${AWS_REGION:-}"
+if [ -z "${AWS_REGION}" ]; then
+  echo "ERROR: AWS_REGION is required." >&2
+  echo "ERROR: Do not default the AWS region." >&2
+  exit 1
+fi
 
 APP_STACK_NAME="${STACK_NAME:-${APP_STACK_NAME:-${STAGE}-${SERVICE_NAME}}}"
 DATA_STACK_NAME="${DATA_STACK_NAME:-${STAGE}-${SERVICE_NAME}-data}"
@@ -17,8 +22,8 @@ DATA_TABLE_NAME="${DATA_TABLE_NAME:-}"
 DATA_LOGICAL_ID="${DATA_LOGICAL_ID:-}"
 RESOURCE_NAME_PREFIX="${RESOURCE_NAME_PREFIX:-}"
 APPLICATION_SERVICE_NAME="${APPLICATION_SERVICE_NAME:-}"
-# SSM_PREFIX is supplied by the pipeline when possible. If empty, derive it
-# after SERVICE_DIR is known using application identity — not pipeline SERVICE_NAME.
+# SSM_PREFIX is the service SSM contract from the pipeline. Empty is an error;
+# do not invent /{Stage}/{applicationName} or /{ResourceNamePrefix}/{applicationName}.
 LAST_DEPLOYED_COMMIT_PARAM="${LAST_DEPLOYED_COMMIT_PARAM:-/${STAGE}/${SERVICE_NAME}/cicd/LAST_DEPLOYED_COMMIT}"
 
 # Ownership identity is filled from the service Data packaged template.
@@ -75,14 +80,15 @@ unset -f _resolve_service_root_from_ci_path
 if [ -z "${APPLICATION_SERVICE_NAME}" ] && [ -f "${SERVICE_DIR}/serverless.yml" ]; then
   APPLICATION_SERVICE_NAME="$(awk '/^service:[[:space:]]*/ { print $2; exit }' "${SERVICE_DIR}/serverless.yml")"
 fi
-APPLICATION_SERVICE_NAME="${APPLICATION_SERVICE_NAME:-workflow-service}"
 
-if [ -z "${SSM_PREFIX:-}" ]; then
-  if [ -n "${RESOURCE_NAME_PREFIX}" ]; then
-    SSM_PREFIX="/${RESOURCE_NAME_PREFIX}/${APPLICATION_SERVICE_NAME}"
-  else
-    SSM_PREFIX="/${STAGE}/${APPLICATION_SERVICE_NAME}"
-  fi
+SSM_PREFIX="${SSM_PREFIX:-}"
+SSM_PREFIX="${SSM_PREFIX#"${SSM_PREFIX%%[![:space:]]*}"}"
+SSM_PREFIX="${SSM_PREFIX%"${SSM_PREFIX##*[![:space:]]}"}"
+if [ -z "${SSM_PREFIX}" ]; then
+  echo "ERROR: SSM_PREFIX is missing." >&2
+  echo "ERROR: The pipeline must supply the service SSM contract prefix." >&2
+  echo "ERROR: Do not invent /{Stage}/{ServiceName} or /{ResourceNamePrefix}/{applicationName}." >&2
+  exit 1
 fi
 
 # Comma-separated list → bash array. Empty → empty array (validate-ssm may warn/skip).

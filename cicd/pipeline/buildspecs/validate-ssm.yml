@@ -15,6 +15,7 @@ phases:
       - |
         set -euo pipefail
         FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+        export FRAMEWORK_ALLOW_S3_FALLBACK=false
         if [ ! -f "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh" ]; then
           echo "[SSM] ERROR repository framework not found at ${FRAMEWORK_PATH}"
           echo "[SSM] Validate-SSM requires cicd/pipeline from SourceArtifact."

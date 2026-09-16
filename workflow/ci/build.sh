@@ -106,6 +106,7 @@ strip_cfn_outputs() {
 copy_packaged_template() {
   local source_dir="$1"
   local dest="$2"
+  local keep_outputs="${3:-}"
   local template=""
 
   if [ -f "$source_dir/cloudformation-template-update-stack.json" ]; then
@@ -119,7 +120,11 @@ copy_packaged_template() {
   fi
 
   cp "$template" "$dest"
-  strip_cfn_outputs "$dest"
+  if [ "$keep_outputs" != "keep-outputs" ]; then
+    strip_cfn_outputs "$dest"
+  else
+    echo "Keeping CloudFormation Outputs on ${dest} (ServiceEndpoint / API URL)"
+  fi
   echo "Packaged template: $dest"
 }
 
@@ -425,7 +430,7 @@ if ! run_serverless package \
   echo "ERROR: failed to package app" >&2
   exit 1
 fi
-copy_packaged_template .serverless app/packaged.yaml
+copy_packaged_template .serverless app/packaged.yaml keep-outputs
 if [ ! -s app/packaged.yaml ]; then
   echo "ERROR: app/packaged.yaml was not generated" >&2
   exit 1

@@ -10,6 +10,8 @@
 #   FRAMEWORK_PATH / FrameworkPath — local path to cicd/pipeline (or its scripts/)
 #   FRAMEWORK_BUNDLE_S3_URI / ARTIFACT_BUCKET — optional fallback download when
 #     cicd/pipeline is not in the source tree. Not produced by deploy-pipeline.sh.
+#   FRAMEWORK_ALLOW_S3_FALLBACK — default true. Set false to fail instead of
+#     downloading cicd-framework/pipeline/latest (Validate-SSM requires this).
 #   FRAMEWORK_BUNDLE_KEY           — default: cicd-framework/pipeline/latest/cicd-pipeline.tgz
 #   CODEBUILD_SRC_DIR              — CodeBuild source root
 
@@ -130,8 +132,13 @@ main() {
     done
   fi
 
-  # 4) S3 download
+  # 4) S3 download (disabled for stages that must use the repository framework)
   if [ -z "$resolved" ]; then
+    if [ "${FRAMEWORK_ALLOW_S3_FALLBACK:-true}" != "true" ]; then
+      echo "ERROR: local CI/CD framework not found and S3 fallback is disabled." >&2
+      echo "FRAMEWORK_PATH=${FRAMEWORK_PATH:-<unset>}" >&2
+      exit 1
+    fi
     resolved="$(download_framework_bundle)" || exit 1
   fi
 

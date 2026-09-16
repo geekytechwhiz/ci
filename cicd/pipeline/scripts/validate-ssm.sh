@@ -2,7 +2,7 @@
 # SSM cross-stack contract gate (service-agnostic).
 #
 # Contract:
-#   ENABLE_SSM_VALIDATION=false → skip intentionally
+#   ENABLE_SSM_VALIDATION unset or false → skip intentionally (default false)
 #   ENABLE_SSM_VALIDATION=true  + REQUIRED_SSM_PARAMETERS empty → FAIL
 #   ENABLE_SSM_VALIDATION=true  + parameters configured → validate
 #
@@ -70,10 +70,8 @@ load_expected_value() {
   local leaf="$1"
   local expected=""
 
-  if [ -n "${DATA_TABLE_NAME:-}" ] && [ "$leaf" = "TABLE_NAME" ]; then
-    expected="$DATA_TABLE_NAME"
-  fi
-
+  # Optional service-supplied JSON object of leaf -> expected value.
+  # Generic CI/CD does not invent TABLE_NAME or other service-specific leaves.
   if [ -z "${SSM_EXPECTED_VALUES_FILE:-}" ]; then
     printf '%s' "$expected"
     return 0
@@ -117,15 +115,33 @@ PY
 parse_required_leaves() {
   local raw="$1"
   local -a parsed=()
-  local leaf seen=""
+  local -a tokens=()
+  local leaf seen="" end i idx
 
   IFS=',' read -r -a parsed <<< "$raw" || true
 
-  REQUIRED_SSM_LEAVES=()
   for leaf in "${parsed[@]+"${parsed[@]}"}"; do
-    leaf="$(trim "$leaf")"
+    tokens+=("$(trim "$leaf")")
+  done
+
+  # CloudFormation AllowedPattern permits a trailing comma. Strip only trailing
+  # empty tokens; a middle empty token (TABLE_NAME,,STREAM_ARN) is an error.
+  end=${#tokens[@]}
+  while [ "$end" -gt 0 ]; do
+    idx=$((end - 1))
+    if [ -n "${tokens[$idx]}" ]; then
+      break
+    fi
+    end="$idx"
+  done
+
+  REQUIRED_SSM_LEAVES=()
+  for ((i = 0; i < end; i++)); do
+    leaf="${tokens[$i]}"
     if [ -z "$leaf" ]; then
-      continue
+      echo "[SSM] ERROR empty parameter leaf in RequiredSsmParameters." >&2
+      echo "[SSM] Empty leaf names are not allowed (example TABLE_NAME,,STREAM_ARN)." >&2
+      return 1
     fi
     if [[ "$leaf" == /* ]] || [[ "$leaf" == */* ]]; then
       echo "[SSM] ERROR malformed parameter path: '${leaf}'" >&2
@@ -155,24 +171,27 @@ parse_required_leaves() {
   return 0
 }
 
-get_parameter_value() {
-  local name="$1"
+# Batch GetParameters (max 10 names per call). Do not convert AccessDenied into
+# ParameterNotFound. InvalidParameters are the only "missing" names.
+fetch_ssm_parameters() {
   local err_file out rc=0
-  err_file="$(mktemp /tmp/ssm-get-parameter.XXXXXX)"
-  out="$(aws ssm get-parameter \
+  GET_PARAMETERS_ERROR=""
+  GET_PARAMETERS_RC=0
+  GET_PARAMETERS_JSON=""
+  err_file="$(mktemp /tmp/ssm-get-parameters.XXXXXX)"
+  out="$(aws ssm get-parameters \
     --region "$AWS_REGION" \
-    --name "$name" \
-    --query 'Parameter.Value' \
-    --output text 2>"$err_file")" || rc=$?
-  GET_PARAMETER_ERROR="$(cat "$err_file" 2>/dev/null || true)"
-  GET_PARAMETER_RC="$rc"
+    --names "$@" \
+    --output json 2>"$err_file")" || rc=$?
+  GET_PARAMETERS_ERROR="$(cat "$err_file" 2>/dev/null || true)"
+  GET_PARAMETERS_RC="$rc"
+  GET_PARAMETERS_JSON="$out"
   rm -f "$err_file"
-  printf '%s' "$out"
 }
 
 echo "[SSM] Validation started"
 
-ENABLE_SSM_VALIDATION="$(trim "${ENABLE_SSM_VALIDATION:-true}")"
+ENABLE_SSM_VALIDATION="$(trim "${ENABLE_SSM_VALIDATION:-false}")"
 case "$ENABLE_SSM_VALIDATION" in
   true|false) ;;
   *)
@@ -225,6 +244,7 @@ echo "[SSM] Required parameters: ${joined}"
 echo "[SSM] SERVICE_NAME=${SERVICE_NAME:-<unset>} STAGE=${STAGE:-<unset>}"
 
 failed=0
+declare -a REQUIRED_SSM_NAMES=()
 for leaf in "${REQUIRED_SSM_LEAVES[@]}"; do
   name="${SSM_PREFIX}/${leaf}"
   if [[ "$name" == *//* ]]; then
@@ -233,41 +253,91 @@ for leaf in "${REQUIRED_SSM_LEAVES[@]}"; do
     failed=1
     continue
   fi
-
-  expected=""
-  expected="$(load_expected_value "$leaf")" || exit $?
-
-  GET_PARAMETER_ERROR=""
-  GET_PARAMETER_RC=0
-  value="$(get_parameter_value "$name")"
-
-  if [ "$GET_PARAMETER_RC" -ne 0 ]; then
-    reason="AWS CLI exited ${GET_PARAMETER_RC}"
-    if echo "$GET_PARAMETER_ERROR" | grep -qi 'AccessDenied'; then
-      reason="AccessDenied"
-    elif echo "$GET_PARAMETER_ERROR" | grep -qi 'ParameterNotFound'; then
-      reason="ParameterNotFound (wrong prefix, name, or region ${AWS_REGION})"
-    fi
-    report_ssm_error "$name" "$reason" "$GET_PARAMETER_ERROR"
-    failed=1
-    continue
-  fi
-
-  if [ -z "$value" ] || [ "$value" = "None" ]; then
-    report_ssm_error "$name" "parameter exists but value is empty"
-    failed=1
-    continue
-  fi
-
-  if [ -n "$expected" ] && [ "$value" != "$expected" ]; then
-    report_ssm_error "$name" "actual value does not match expected deployed contract for ${leaf}"
-    echo "[SSM] Expected length: ${#expected}; actual length: ${#value}" >&2
-    failed=1
-    continue
-  fi
-
-  echo "[SSM] present: ${name}"
+  REQUIRED_SSM_NAMES+=("$name")
 done
+
+if [ "$failed" -eq 0 ] && [ ${#REQUIRED_SSM_NAMES[@]} -gt 0 ]; then
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "[SSM] ERROR python3 is required to parse get-parameters output." >&2
+    exit 2
+  fi
+
+  chunk_size=10
+  offset=0
+  while [ "$offset" -lt ${#REQUIRED_SSM_NAMES[@]} ]; do
+    chunk=()
+    i=0
+    while [ "$i" -lt "$chunk_size" ] && [ $((offset + i)) -lt ${#REQUIRED_SSM_NAMES[@]} ]; do
+      chunk+=("${REQUIRED_SSM_NAMES[$((offset + i))]}")
+      i=$((i + 1))
+    done
+    offset=$((offset + ${#chunk[@]}))
+
+    fetch_ssm_parameters "${chunk[@]}"
+    if [ "$GET_PARAMETERS_RC" -ne 0 ]; then
+      reason="AWS CLI exited ${GET_PARAMETERS_RC}"
+      if echo "$GET_PARAMETERS_ERROR" | grep -qi 'AccessDenied'; then
+        reason="AccessDenied"
+      elif echo "$GET_PARAMETERS_ERROR" | grep -qi 'ParameterNotFound'; then
+        reason="ParameterNotFound (wrong prefix, name, or region ${AWS_REGION})"
+      fi
+      for name in "${chunk[@]}"; do
+        report_ssm_error "$name" "$reason" "$GET_PARAMETERS_ERROR"
+      done
+      failed=1
+      continue
+    fi
+
+    chunk_report="$(
+      GET_PARAMETERS_JSON="$GET_PARAMETERS_JSON" python3 - "${chunk[@]}" <<'PY'
+import json, os, sys
+data = json.loads(os.environ.get("GET_PARAMETERS_JSON") or "{}")
+found = {p.get("Name"): (p.get("Value") if p.get("Value") is not None else "") for p in (data.get("Parameters") or []) if p.get("Name")}
+invalid = set(data.get("InvalidParameters") or [])
+for name in sys.argv[1:]:
+    if name in invalid:
+        print("INVALID\t%s" % name)
+    elif name in found:
+        print("FOUND\t%s\t%s" % (name, found[name].replace("\t", " ").replace("\n", " ")))
+    else:
+        print("MISSING\t%s" % name)
+PY
+    )" || {
+      echo "[SSM] ERROR failed to parse get-parameters output." >&2
+      echo "$GET_PARAMETERS_JSON" >&2
+      exit 2
+    }
+
+    while IFS=$'\t' read -r status name value; do
+      [ -z "$status" ] && continue
+      leaf="${name##*/}"
+      expected=""
+      expected="$(load_expected_value "$leaf")" || exit $?
+      case "$status" in
+        INVALID|MISSING)
+          report_ssm_error "$name" "ParameterNotFound (wrong prefix, name, or region ${AWS_REGION})"
+          failed=1
+          ;;
+        FOUND)
+          if [ -z "$value" ] || [ "$value" = "None" ]; then
+            report_ssm_error "$name" "parameter exists but value is empty"
+            failed=1
+          elif [ -n "$expected" ] && [ "$value" != "$expected" ]; then
+            report_ssm_error "$name" "actual value does not match expected deployed contract for ${leaf}"
+            echo "[SSM] Expected length: ${#expected}; actual length: ${#value}" >&2
+            failed=1
+          else
+            echo "[SSM] present: ${name}"
+          fi
+          ;;
+        *)
+          report_ssm_error "$name" "unexpected get-parameters status ${status}"
+          failed=1
+          ;;
+      esac
+    done <<< "$chunk_report"
+  done
+fi
 
 if [ "$failed" -ne 0 ]; then
   echo "[SSM] Validation FAILED" >&2

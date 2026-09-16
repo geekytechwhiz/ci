@@ -176,7 +176,11 @@ const explicitPrefix = svc.getVal("resourceNamePrefix:") || env.getNested("namin
 const resourceNamePrefix = explicitPrefix || (regionShort
   ? `${platformCode}${stage}-${regionShort}-${projectCode}`
   : "");
-const ssmPrefix = svc.getVal("prefix:") || (resourceNamePrefix ? `/${resourceNamePrefix}/${serviceName}` : "");
+const applicationName = svc.getNested("service", "name") || "";
+const explicitSsmPrefix = svc.getVal("prefix:");
+const ssmPrefix = explicitSsmPrefix || (resourceNamePrefix && applicationName
+  ? `/${resourceNamePrefix}/${applicationName}`
+  : "");
 
 const requiredFromSvc = [];
 let inSsmRequired = false;
@@ -217,6 +221,7 @@ if (ownershipService) {
   console.log(`OwnershipTagService=${ownershipService}`);
 }
 console.log(`RequiredSsmParameters=${requiredSsm}`);
+console.log(`EnableSsmValidation=false`);
 console.log(`PlatformCode=${platformCode}`);
 console.log(`ProjectCode=${projectCode}`);
 if (regionShort) {

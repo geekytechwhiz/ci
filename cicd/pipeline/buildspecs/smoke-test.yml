@@ -1,0 +1,31 @@
+version: 0.2
+# Reference buildspec: Smoke-Test
+# Pipeline PrimarySource is SourceArtifact. This stage does not deploy.
+# Inline CloudFormation BuildSpec must stay in sync with this file.
+
+env:
+  shell: bash
+
+phases:
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+        export FRAMEWORK_ALLOW_S3_FALLBACK=false
+        if [ ! -f "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh" ]; then
+          echo "[SMOKE] ERROR repository framework not found at ${FRAMEWORK_PATH}"
+          exit 1
+        fi
+        source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+        echo "[SMOKE] ENABLE_APP=${ENABLE_APP:-unset}"
+        echo "[SMOKE] AWS_REGION=${AWS_REGION:-unset}"
+        echo "[SMOKE] APP_STACK_NAME=${APP_STACK_NAME:-${STACK_NAME:-unset}}"
+
+  build:
+    commands:
+      - "${CICD_SCRIPTS_DIR}/run-smoke-test.sh"
+
+  post_build:
+    commands:
+      - echo "[SMOKE] Smoke-Test finished"

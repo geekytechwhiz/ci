@@ -47,9 +47,14 @@ export SERVICE_NAME=cloud-formation-testing
 export STAGE=dev
 export AWS_REGION=us-east-1
 export RESOURCE_NAME_PREFIX=nvdev-use1-mvx
+export SSM_PREFIX=/nvdev-use1-mvx/workflow-service
 export CODEBUILD_SRC_DIR="$(mktemp -d /tmp/data-contract.XXXXXX)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
+
+echo "=== SSM_PREFIX is not rewritten from pipeline identity ==="
+assert_eq "supplied SSM_PREFIX preserved" "$SSM_PREFIX" /nvdev-use1-mvx/workflow-service
+assert_eq "pipeline SERVICE_NAME is not the SSM leaf namespace" "$SERVICE_NAME" cloud-formation-testing
 
 echo "=== Data deployment state machine ==="
 assert_eq "1 stack missing + table missing" \
@@ -70,6 +75,10 @@ assert_eq "8 CREATE_FAILED + table exists verified" \
   "$(classify_data_preflight_action EXISTS CREATE_FAILED EXISTS VERIFIED COMPATIBLE 0)" RECOVERY_REQUIRED
 assert_eq "9 UPDATE_ROLLBACK_FAILED + table exists" \
   "$(classify_data_preflight_action EXISTS UPDATE_ROLLBACK_FAILED EXISTS VERIFIED COMPATIBLE 0)" STOP
+assert_eq "UPDATE_ROLLBACK_COMPLETE + managed table" \
+  "$(classify_data_preflight_action EXISTS UPDATE_ROLLBACK_COMPLETE EXISTS NOT_APPLICABLE NOT_APPLICABLE 1)" UPDATE
+assert_eq "UPDATE_FAILED is STOP" \
+  "$(classify_data_preflight_action EXISTS UPDATE_FAILED EXISTS VERIFIED COMPATIBLE 0)" STOP
 assert_eq "10 unrelated table ownership unverified" \
   "$(classify_data_preflight_action NOT_FOUND '' EXISTS UNVERIFIED COMPATIBLE 0)" STOP
 
