@@ -3,9 +3,11 @@
 resourceNamePrefix: nvdev-use1-mvx
 ssmPrefix: /nvdev-use1-mvx/workflow-service
 
-# Existing retained DynamoDB table. TableName is an identity field:
-# changing it would replace the table. Import/recovery requires an exact match.
-tableName: nvdev-use1-mvx-workflow-service-db
+# Existing retained DynamoDB table. TableName is a CloudFormation identity
+# field: changing it replaces (or orphans) the table. Import/recovery requires
+# an exact match with the live physical name. Do not derive this from
+# resourceNamePrefix — the service configures the name explicitly.
+tableName: workflow-dev-db
 
 queueName: nvdev-use1-mvx-workflow-service-events
 eventBusName: nvdev-use1-mvx-workflow-service-bus

@@ -149,7 +149,10 @@ Parameters:
   DataTableName:
     Type: String
     Default: ''
-    Description: Physical DynamoDB table name owned by the Data stack. Empty uses ${ServiceName}-${Stage}.
+    Description: >
+      Optional IAM-scope hint for the Data stack DynamoDB table. Runtime CREATE/UPDATE/IMPORT
+      identity is read from the service Data packaged template, not invented as
+      ServiceName-Stage. Empty does not substitute a pipeline-generated name.
 
   DataLogicalId:
     Type: String
@@ -578,6 +581,19 @@ Resources:
                 - HasResourceNamePrefix
                 - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ResourceNamePrefix}*/stream/*'
                 - !Ref AWS::NoValue
+          - Sid: DynamoDbDescribeForPreflightAndImport
+            Effect: Allow
+            Action:
+              - dynamodb:DescribeTable
+              - dynamodb:DescribeTimeToLive
+              - dynamodb:ListTagsOfResource
+              - dynamodb:DescribeContinuousBackups
+              - dynamodb:DescribeKinesisStreamingDestination
+              - dynamodb:DescribeStream
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*'
+              - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*/index/*'
+              - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*/stream/*'
           - Sid: DynamoDbListStreams
             Effect: Allow
             Action: dynamodb:ListStreams
@@ -925,7 +941,12 @@ Resources:
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
-                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
+                  - !If
+                    - HasSsmPrefix
+                    - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/*'
+                    - !Ref AWS::NoValue
               - Sid: ReadServiceArtifacts
                 Effect: Allow
                 Action:
@@ -1199,7 +1220,10 @@ Resources:
                 Action:
                   - cloudformation:DescribeStacks
                   - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeEvents
                   - cloudformation:DescribeChangeSet
+                  - cloudformation:DeleteStack
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data/*'
                   - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data'
@@ -1767,8 +1791,8 @@ Resources:
                   source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
                   echo "STAGE=${STAGE:?} SERVICE_NAME=${SERVICE_NAME:?}"
                   echo "CURRENT_COMMIT=${CURRENT_COMMIT:?}"
-                  echo "DATA_TABLE_NAME=${DATA_TABLE_NAME:?}"
-                  echo "DATA_LOGICAL_ID=${DATA_LOGICAL_ID:?}"
+                  echo "DATA_TABLE_NAME=${DATA_TABLE_NAME:-<from Data artifact>}"
+                  echo "DATA_LOGICAL_ID=${DATA_LOGICAL_ID:-<from Data artifact>}"
                   echo "SSM_PREFIX=${SSM_PREFIX:?}"
             build:
               commands:
@@ -1849,7 +1873,7 @@ Resources:
             Value: !If
               - HasDataTableName
               - !Ref DataTableName
-              - !Sub '${ServiceName}-${Stage}'
+              - ''
           - Name: DATA_LOGICAL_ID
             Type: PLAINTEXT
             Value: !Ref DataLogicalId
@@ -1977,7 +2001,7 @@ Resources:
             Value: !If
               - HasDataTableName
               - !Ref DataTableName
-              - !Sub '${ServiceName}-${Stage}'
+              - ''
           - Name: DATA_LOGICAL_ID
             Type: PLAINTEXT
             Value: !Ref DataLogicalId

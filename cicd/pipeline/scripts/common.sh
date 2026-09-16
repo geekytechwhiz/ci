@@ -1,6 +1,8 @@
 #!/bin/bash
 # Generic CodePipeline helpers. Sourced by other runtime scripts.
-# 100% service-agnostic — all names come from env (SERVICE_NAME, STAGE, …).
+# Stack names may come from env (SERVICE_NAME, STAGE). DynamoDB TableName and
+# logical ID come from the service Data packaged template — never invent
+# ${SERVICE_NAME}-${STAGE} or prefix an explicit service resource name.
 set -euo pipefail
 
 : "${SERVICE_NAME:?SERVICE_NAME must be set}"
@@ -11,8 +13,8 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 APP_STACK_NAME="${STACK_NAME:-${APP_STACK_NAME:-${STAGE}-${SERVICE_NAME}}}"
 DATA_STACK_NAME="${DATA_STACK_NAME:-${STAGE}-${SERVICE_NAME}-data}"
 INFRA_STACK_NAME="${INFRA_STACK_NAME:-${STAGE}-${SERVICE_NAME}-infra}"
-DATA_TABLE_NAME="${DATA_TABLE_NAME:-${SERVICE_NAME}-${STAGE}}"
-DATA_LOGICAL_ID="${DATA_LOGICAL_ID:-PrimaryTable}"
+DATA_TABLE_NAME="${DATA_TABLE_NAME:-}"
+DATA_LOGICAL_ID="${DATA_LOGICAL_ID:-}"
 SSM_PREFIX="${SSM_PREFIX:-/${STAGE}/${SERVICE_NAME}}"
 LAST_DEPLOYED_COMMIT_PARAM="${LAST_DEPLOYED_COMMIT_PARAM:-/${STAGE}/${SERVICE_NAME}/cicd/LAST_DEPLOYED_COMMIT}"
 
@@ -249,6 +251,98 @@ fetch_immutable_packaged_template() {
     echo "Do not fall back to a local packaged.yaml when CURRENT_COMMIT is set." >&2
     return 1
   fi
+}
+
+# Resolve DynamoDB logical ID + physical TableName from the service artifact.
+# Does not invent names, does not apply ResourceNamePrefix to an explicit TableName.
+apply_data_resource_identity_from_template() {
+  local template_path="${1:-}"
+  local resolved hint_logical hint_table logical_id table_name
+
+  if [ -z "$template_path" ] || [ ! -s "$template_path" ]; then
+    echo "ERROR: Data packaged template is required to resolve the DynamoDB table identity." >&2
+    return 1
+  fi
+
+  hint_logical="${DATA_LOGICAL_ID:-}"
+  hint_table="${DATA_TABLE_NAME:-}"
+
+  resolved="$(
+    TEMPLATE_PATH="$template_path" \
+    HINT_LOGICAL_ID="$hint_logical" \
+    node <<'NODE'
+const fs = require('fs');
+const path = process.env.TEMPLATE_PATH;
+const hintLogical = (process.env.HINT_LOGICAL_ID || '').trim();
+let template;
+try {
+  template = JSON.parse(fs.readFileSync(path, 'utf8'));
+} catch (e) {
+  console.error('ERROR: Data packaged template is not JSON: ' + e.message);
+  process.exit(1);
+}
+const resources = template.Resources || {};
+const tables = [];
+for (const [id, res] of Object.entries(resources)) {
+  if (res && res.Type === 'AWS::DynamoDB::Table') {
+    tables.push({ id, res });
+  }
+}
+if (tables.length === 0) {
+  console.error('ERROR: Data packaged template has no AWS::DynamoDB::Table resource.');
+  process.exit(1);
+}
+
+let chosen = null;
+if (hintLogical && resources[hintLogical] && resources[hintLogical].Type === 'AWS::DynamoDB::Table') {
+  chosen = { id: hintLogical, res: resources[hintLogical] };
+} else if (hintLogical) {
+  console.error('WARN: DATA_LOGICAL_ID=' + hintLogical + ' is not an AWS::DynamoDB::Table in the Data artifact; using the artifact table instead.');
+}
+if (!chosen) {
+  if (tables.length !== 1) {
+    console.error('ERROR: Data packaged template has ' + tables.length + ' DynamoDB tables; set DATA_LOGICAL_ID to the service logical ID.');
+    process.exit(1);
+  }
+  chosen = tables[0];
+}
+
+const tableName = chosen.res.Properties && chosen.res.Properties.TableName;
+if (!tableName || typeof tableName !== 'string' || !tableName.trim()) {
+  console.error('ERROR: ' + chosen.id + ' TableName is missing or not a literal string in the Data artifact.');
+  process.exit(1);
+}
+if (tableName.includes('${') || tableName.includes('!Ref') || tableName.includes('Fn::')) {
+  console.error('ERROR: ' + chosen.id + ' TableName is unresolved in the Data artifact: ' + tableName);
+  process.exit(1);
+}
+process.stdout.write(chosen.id + '\t' + tableName.trim());
+NODE
+  )" || return 1
+
+  logical_id="${resolved%%$'\t'*}"
+  table_name="${resolved#*$'\t'}"
+
+  if [ -z "$logical_id" ] || [ -z "$table_name" ] || [ "$logical_id" = "$resolved" ]; then
+    echo "ERROR: Failed to parse DynamoDB identity from ${template_path}." >&2
+    return 1
+  fi
+
+  if [ -n "$hint_table" ] && [ "$hint_table" != "$table_name" ]; then
+    echo "INFO: Ignoring pipeline/env DATA_TABLE_NAME='${hint_table}'."
+    echo "INFO: Service Data artifact TableName='${table_name}' is authoritative."
+  fi
+  if [ -n "$hint_logical" ] && [ "$hint_logical" != "$logical_id" ]; then
+    echo "INFO: Using Data artifact logical ID '${logical_id}' (env had '${hint_logical}')."
+  fi
+
+  DATA_LOGICAL_ID="$logical_id"
+  DATA_TABLE_NAME="$table_name"
+  if [ -z "${OWNERSHIP_TAG_PURPOSE:-}" ]; then
+    OWNERSHIP_TAG_PURPOSE="$DATA_LOGICAL_ID"
+  fi
+  export DATA_LOGICAL_ID DATA_TABLE_NAME OWNERSHIP_TAG_PURPOSE
+  echo "Data resource identity from service artifact: logicalId=${DATA_LOGICAL_ID} tableName=${DATA_TABLE_NAME}"
 }
 
 upload_environment_artifact() {

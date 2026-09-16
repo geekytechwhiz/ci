@@ -77,6 +77,8 @@ write_preflight_env() {
     fi
     echo "DATA_ARTIFACT_COMMIT=${DATA_ARTIFACT_COMMIT}"
     echo "DATA_ARTIFACT_URI=${DATA_ARTIFACT_URI}"
+    echo "DATA_TABLE_NAME=${DATA_TABLE_NAME}"
+    echo "DATA_LOGICAL_ID=${DATA_LOGICAL_ID}"
   } >"$tmp"
   mv "$tmp" "$PREFLIGHT_ENV"
   log "Wrote $PREFLIGHT_ENV"
@@ -831,7 +833,7 @@ NODE
 
 log "Starting Data preflight"
 log "stage=${STAGE} region=${AWS_REGION} service=${OWNERSHIP_TAG_SERVICE}"
-log "stack=${DATA_STACK_NAME} table=${DATA_TABLE_NAME}"
+log "stack=${DATA_STACK_NAME}"
 
 TABLE_JSON=""
 TABLE_ARN=""
@@ -844,6 +846,17 @@ if ! resolve_packaged_data_template; then
   finish
   exit 0
 fi
+
+if ! apply_data_resource_identity_from_template "$PACKAGED_TEMPLATE_PATH"; then
+  DATA_ACTION="STOP"
+  DATA_STOP_REASON="INCOMPATIBLE_CONFIGURATION"
+  DATA_TABLE_STATE="NOT_CHECKED"
+  log "ERROR: Could not read DynamoDB TableName from the service Data artifact."
+  finish
+  exit 0
+fi
+
+log "table=${DATA_TABLE_NAME} logicalId=${DATA_LOGICAL_ID}"
 
 if ! describe_data_stack; then
   DATA_ACTION="STOP"

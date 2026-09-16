@@ -24,7 +24,7 @@ phases:
         source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
         echo "STAGE=${STAGE:?} SERVICE_NAME=${SERVICE_NAME:?}"
         echo "CURRENT_COMMIT=${CURRENT_COMMIT:?}"
-        echo "DATA_TABLE_NAME=${DATA_TABLE_NAME:?}"
+        echo "DATA_TABLE_NAME=${DATA_TABLE_NAME:-<from Data artifact>}"
 
   build:
     commands:

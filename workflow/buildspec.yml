@@ -14,8 +14,6 @@ env:
     STACK_NAME: 'dev-workflow-service'
     DATA_STACK_NAME: 'dev-workflow-service-data'
     INFRA_STACK_NAME: 'dev-workflow-service-infra'
-    DATA_TABLE_NAME: 'workflow-dev-db'
-    WORKFLOW_TABLE_NAME: 'workflow-dev-db'
     DATA_LOGICAL_ID: 'WorkflowTable'
     NODE_OPTIONS: '--max-old-space-size=2048'
 

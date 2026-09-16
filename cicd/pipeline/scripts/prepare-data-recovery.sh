@@ -20,7 +20,6 @@ source "$SCRIPT_DIR/common.sh"
 : "${STAGE:?STAGE must be set (dev, stg, or prd)}"
 : "${ARTIFACT_BUCKET:?ARTIFACT_BUCKET must be set}"
 : "${DATA_STACK_NAME:?DATA_STACK_NAME must be set}"
-: "${DATA_TABLE_NAME:?DATA_TABLE_NAME must be set}"
 
 assert_stage
 assert_codebuild_stage_match
@@ -703,12 +702,21 @@ if (resourceIds.length !== 1 || resourceIds[0] !== logicalId) {
 }
 
 fs.writeFileSync(process.env.DEST_TEMPLATE, JSON.stringify(importTemplate, null, 2) + '\n');
+const artifactTableName = workflowTable.Properties && workflowTable.Properties.TableName;
+if (!artifactTableName || typeof artifactTableName !== 'string') {
+  console.error('[DATA-RECOVERY-PREPARE] ERROR: Data artifact TableName is missing or not a literal string');
+  process.exit(1);
+}
+if (process.env.EXPECTED_TABLE_NAME && process.env.EXPECTED_TABLE_NAME !== artifactTableName) {
+  console.error('[DATA-RECOVERY-PREPARE] ERROR: Env table name ' + process.env.EXPECTED_TABLE_NAME + ' does not match artifact TableName ' + artifactTableName);
+  process.exit(1);
+}
 fs.writeFileSync(process.env.DEST_IMPORT, JSON.stringify([
   {
     ResourceType: 'AWS::DynamoDB::Table',
     LogicalResourceId: logicalId,
     ResourceIdentifier: {
-      TableName: process.env.EXPECTED_TABLE_NAME,
+      TableName: artifactTableName,
     },
   },
 ], null, 2) + '\n');
@@ -919,6 +927,10 @@ if [ -n "${DATA_ARTIFACT_COMMIT:-}" ] && [ "${DATA_ARTIFACT_COMMIT}" != "${CURRE
 fi
 
 fetch_immutable_data_artifact
+if ! apply_data_resource_identity_from_template "$PACKAGED_TEMPLATE_PATH"; then
+  fail_stop "Could not read DynamoDB TableName from the service Data artifact."
+fi
+log "table=${DATA_TABLE_NAME} logicalId=${DATA_LOGICAL_ID}"
 describe_data_stack_or_fail
 describe_workflow_table_or_fail
 load_table_tags

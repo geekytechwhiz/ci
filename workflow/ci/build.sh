@@ -317,6 +317,31 @@ if [ ! -s data/packaged.yaml ]; then
   exit 1
 fi
 
+echo "Validating Data artifact TableName against service naming.yml..."
+NAMING_FILE="$SERVICE_DIR/config/naming.yml" DATA_TEMPLATE="$SERVICE_DIR/data/packaged.yaml" node -e '
+  const fs = require("fs");
+  const naming = fs.readFileSync(process.env.NAMING_FILE, "utf8");
+  const match = naming.match(/^[ \t]*tableName:[ \t]*(\S+)/m);
+  if (!match) {
+    console.error("ERROR: workflow/config/naming.yml is missing tableName");
+    process.exit(1);
+  }
+  const expected = match[1].replace(/^["\x27]|["\x27]$/g, "");
+  const tpl = JSON.parse(fs.readFileSync(process.env.DATA_TEMPLATE, "utf8"));
+  const tables = Object.entries(tpl.Resources || {}).filter(([, r]) => r && r.Type === "AWS::DynamoDB::Table");
+  if (tables.length !== 1) {
+    console.error("ERROR: data/packaged.yaml must contain exactly one AWS::DynamoDB::Table");
+    process.exit(1);
+  }
+  const [logicalId, resource] = tables[0];
+  const actual = resource.Properties && resource.Properties.TableName;
+  if (actual !== expected) {
+    console.error(`ERROR: Packaged ${logicalId} TableName is "${actual}", naming.yml tableName is "${expected}"`);
+    process.exit(1);
+  }
+  console.log(`Data artifact TableName OK: ${logicalId} -> ${actual}`);
+'
+
 ###############################################################################
 # 5. Package INFRA
 ###############################################################################
