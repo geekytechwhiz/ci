@@ -1424,7 +1424,7 @@ Resources:
             post_build:
               commands:
                 - |
-                  if [ "${CODEBUILD_BUILD_SUCCEEDING}" != "1" ]; then
+                  if [ "${!CODEBUILD_BUILD_SUCCEEDING}" != "1" ]; then
                     echo "BUILD phase failed"
                     exit 1
                   fi
