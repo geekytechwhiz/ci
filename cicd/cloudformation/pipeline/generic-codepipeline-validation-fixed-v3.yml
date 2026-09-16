@@ -1591,9 +1591,9 @@ Resources:
                       aws s3 cp "s3://${!ARTIFACT_BUCKET}/${!IMPORT_KEY}" /tmp/import-manifest.json
                       if ! aws cloudformation describe-stacks --stack-name "${!DATA_STACK_NAME}" >/dev/null 2>&1; then
                         cat > /tmp/empty-stack.yaml <<'EOF'
-                        AWSTemplateFormatVersion: '2010-09-09'
-                        Resources: {}
-                        EOF
+                  AWSTemplateFormatVersion: '2010-09-09'
+                  Resources: {}
+                  EOF
                         aws cloudformation create-stack --stack-name "${!DATA_STACK_NAME}" --template-body file:///tmp/empty-stack.yaml --role-arn "${!CFN_DEPLOY_ROLE_ARN}"
                         aws cloudformation wait stack-create-complete --stack-name "${!DATA_STACK_NAME}"
                       fi
@@ -1611,7 +1611,7 @@ Resources:
                         --change-set-type IMPORT \
                         --template-url "${!TEMPLATE_URL}" \
                         --resources-to-import file:///tmp/import-manifest.json \
-                        --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM AUTO_EXPAND \
+                        --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
                         --role-arn "${!CFN_RECOVER_ROLE_ARN}"
                       aws cloudformation wait change-set-create-complete --stack-name "${!DATA_STACK_NAME}" --change-set-name "${!RECOVERY_CHANGE_SET_NAME}"
                     else
@@ -1626,7 +1626,7 @@ Resources:
                       --change-set-name "${!CHANGE_SET_NAME}" \
                       --change-set-type "${!CHANGE_SET_TYPE}" \
                       --template-url "${!TEMPLATE_URL}" \
-                      --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM AUTO_EXPAND \
+                      --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
                       --role-arn "${!CFN_DEPLOY_ROLE_ARN}"
                     aws cloudformation wait change-set-create-complete --stack-name "${!DATA_STACK_NAME}" --change-set-name "${!CHANGE_SET_NAME}" || { aws cloudformation describe-change-set --stack-name "${!DATA_STACK_NAME}" --change-set-name "${!CHANGE_SET_NAME}" || true; exit 1; }
                     aws cloudformation execute-change-set --stack-name "${!DATA_STACK_NAME}" --change-set-name "${!CHANGE_SET_NAME}"
@@ -1870,7 +1870,7 @@ Resources:
                     --change-set-name "${!CHANGE_SET_NAME}" \
                     --change-set-type "${!CHANGE_SET_TYPE}" \
                     --template-url "${!TEMPLATE_URL}" \
-                    --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM AUTO_EXPAND \
+                    --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
                     --role-arn "${!CFN_DEPLOY_ROLE_ARN}"
                   rc=$?
                   set -e
@@ -1980,7 +1980,7 @@ Resources:
                     --change-set-name "${!CHANGE_SET_NAME}" \
                     --change-set-type "${!CHANGE_SET_TYPE}" \
                     --template-url "${!TEMPLATE_URL}" \
-                    --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM AUTO_EXPAND \
+                    --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
                     --role-arn "${!CFN_DEPLOY_ROLE_ARN}"
                   rc=$?
                   set -e
@@ -2254,7 +2254,7 @@ Resources:
                       }
                       with open(path, "w") as f:
                         json.dump(evidence, f, separators=(",", ":"))
-                    PY
+                  PY
                   }
 
                   verify_stack "DATA_STACK_NAME" "s3://${!ARTIFACT_BUCKET}/${!PREFIX}data/packaged.yaml" "${!ENABLE_DATA}"
