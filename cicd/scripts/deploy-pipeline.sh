@@ -84,22 +84,32 @@ const kmsKeyArn = env.getVal("kmsKeyArn:");
 const repo = svc.getVal("repository:") || "example-org/example-repo";
 const branch = svc.getVal("branch:") || "main";
 const ciPath = svc.getVal("ciPath:") || "ci";
-const tableName = svc.getVal("tableName:") || process.argv[3] + "-" + process.argv[4];
-const logicalId = svc.getVal("logicalId:") || "PrimaryTable";
-const ssmPrefix = svc.getVal("prefix:") || ("/" + process.argv[4] + "/" + process.argv[3]);
+const tableName = svc.getVal("tableName:") || "";
+const logicalId = svc.getVal("logicalId:") || "";
+const ssmPrefix = svc.getVal("prefix:") || "";
 const resourceNamePrefix = svc.getVal("resourceNamePrefix:") || "";
-const ownershipPurpose = svc.getVal("Purpose:") || "primaryDataTable";
-const ownershipService = svc.getVal("Service:") || process.argv[3];
+const ownershipPurpose = svc.getVal("Purpose:") || "";
+const ownershipService = svc.getVal("Service:") || "";
 
 console.log(`ServiceName=${process.argv[3]}`);
 console.log(`Stage=${process.argv[4]}`);
 console.log(`PipelineName=${process.argv[4]}-${process.argv[3]}-pipeline`);
 console.log(`CiPath=${ciPath}`);
-console.log(`DataTableName=${tableName}`);
-console.log(`DataLogicalId=${logicalId}`);
-console.log(`SsmPrefix=${ssmPrefix}`);
-console.log(`OwnershipTagPurpose=${ownershipPurpose}`);
-console.log(`OwnershipTagService=${ownershipService}`);
+if (tableName) {
+  console.log(`DataTableName=${tableName}`);
+}
+if (logicalId) {
+  console.log(`DataLogicalId=${logicalId}`);
+}
+if (ssmPrefix) {
+  console.log(`SsmPrefix=${ssmPrefix}`);
+}
+if (ownershipPurpose) {
+  console.log(`OwnershipTagPurpose=${ownershipPurpose}`);
+}
+if (ownershipService) {
+  console.log(`OwnershipTagService=${ownershipService}`);
+}
 console.log(`RequiredSsmParameters=TABLE_NAME,TABLE_ARN,STREAM_ARN,SQS_QUEUE_URL,SQS_QUEUE_ARN,EVENT_BUS_NAME,EVENT_BUS_ARN`);
 if (resourceNamePrefix) {
   console.log(`ResourceNamePrefix=${resourceNamePrefix}`);

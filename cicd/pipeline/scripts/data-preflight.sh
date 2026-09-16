@@ -79,6 +79,10 @@ write_preflight_env() {
     echo "DATA_ARTIFACT_URI=${DATA_ARTIFACT_URI}"
     echo "DATA_TABLE_NAME=${DATA_TABLE_NAME}"
     echo "DATA_LOGICAL_ID=${DATA_LOGICAL_ID}"
+    echo "OWNERSHIP_TAG_SERVICE=${OWNERSHIP_TAG_SERVICE}"
+    echo "OWNERSHIP_TAG_STAGE=${OWNERSHIP_TAG_STAGE}"
+    echo "OWNERSHIP_TAG_PURPOSE=${OWNERSHIP_TAG_PURPOSE}"
+    echo "OWNERSHIP_TAG_MANAGED_BY=${OWNERSHIP_TAG_MANAGED_BY}"
   } >"$tmp"
   mv "$tmp" "$PREFLIGHT_ENV"
   log "Wrote $PREFLIGHT_ENV"
@@ -92,6 +96,9 @@ finish() {
   fi
   log "Artifact commit: ${DATA_ARTIFACT_COMMIT:-<none>}"
   log "Artifact URI: ${DATA_ARTIFACT_URI:-<none>}"
+  log "Expected TableName from packaged.yaml: ${DATA_TABLE_NAME:-<unset>}"
+  log "Expected logical ID from packaged.yaml: ${DATA_LOGICAL_ID:-<unset>}"
+  log "Expected tags from packaged.yaml: Service=${OWNERSHIP_TAG_SERVICE:-<unset>} Stage=${OWNERSHIP_TAG_STAGE:-<unset>} Purpose=${OWNERSHIP_TAG_PURPOSE:-<unset>} ManagedBy=${OWNERSHIP_TAG_MANAGED_BY:-<unset>}"
   case "${DATA_ACTION}" in
     UPDATE)
       log "Data stack is usable and CloudFormation manages the expected DynamoDB table."
@@ -293,8 +300,9 @@ dynamodb_error_is_not_found() {
 describe_workflow_table() {
   local output rc=0
   log "Checking DynamoDB resource"
-  log "Expected table: ${DATA_TABLE_NAME}"
-  log "Expected account/region/service/environment come from the live caller identity and STAGE=${STAGE}"
+  log "Expected table from packaged.yaml: ${DATA_TABLE_NAME}"
+  log "Expected identity tags from packaged.yaml: Service=${OWNERSHIP_TAG_SERVICE} Stage=${OWNERSHIP_TAG_STAGE} Purpose=${OWNERSHIP_TAG_PURPOSE} ManagedBy=${OWNERSHIP_TAG_MANAGED_BY}"
+  log "Expected account/region come from the live caller identity; expected Stage tag must match STAGE=${STAGE}"
 
   set +e
   output="$(aws dynamodb describe-table \
@@ -500,7 +508,7 @@ validate_table_ownership() {
     EXPECTED_ACCOUNT="$caller_account" \
     EXPECTED_REGION="$AWS_REGION" \
     EXPECTED_SERVICE="$OWNERSHIP_TAG_SERVICE" \
-    EXPECTED_STAGE="$STAGE" \
+    EXPECTED_STAGE="${OWNERSHIP_TAG_STAGE:-$STAGE}" \
     EXPECTED_PURPOSE="$OWNERSHIP_TAG_PURPOSE" \
     EXPECTED_MANAGED_BY="$OWNERSHIP_TAG_MANAGED_BY" \
     TABLE_JSON="${TABLE_JSON}" \
@@ -832,8 +840,8 @@ NODE
 }
 
 log "Starting Data preflight"
-log "stage=${STAGE} region=${AWS_REGION} service=${OWNERSHIP_TAG_SERVICE}"
-log "stack=${DATA_STACK_NAME}"
+log "stage=${STAGE} region=${AWS_REGION} stack=${DATA_STACK_NAME}"
+log "Expected DynamoDB identity will be read from data/packaged.yaml (not pipeline DATA_TABLE_NAME or OWNERSHIP_TAG_*)."
 
 TABLE_JSON=""
 TABLE_ARN=""
@@ -851,12 +859,14 @@ if ! apply_data_resource_identity_from_template "$PACKAGED_TEMPLATE_PATH"; then
   DATA_ACTION="STOP"
   DATA_STOP_REASON="INCOMPATIBLE_CONFIGURATION"
   DATA_TABLE_STATE="NOT_CHECKED"
-  log "ERROR: Could not read DynamoDB TableName from the service Data artifact."
+  log "ERROR: Could not derive a valid DynamoDB identity from the service Data artifact."
+  log "ERROR: Expected values discovered from packaged.yaml: table=${DATA_TABLE_NAME:-<unset>} logicalId=${DATA_LOGICAL_ID:-<unset>} Service=${OWNERSHIP_TAG_SERVICE:-<unset>} Stage=${OWNERSHIP_TAG_STAGE:-<unset>} Purpose=${OWNERSHIP_TAG_PURPOSE:-<unset>} ManagedBy=${OWNERSHIP_TAG_MANAGED_BY:-<unset>}"
   finish
   exit 0
 fi
 
-log "table=${DATA_TABLE_NAME} logicalId=${DATA_LOGICAL_ID}"
+log "Expected table=${DATA_TABLE_NAME} logicalId=${DATA_LOGICAL_ID}"
+log "Expected tags Service=${OWNERSHIP_TAG_SERVICE} Stage=${OWNERSHIP_TAG_STAGE} Purpose=${OWNERSHIP_TAG_PURPOSE} ManagedBy=${OWNERSHIP_TAG_MANAGED_BY}"
 
 if ! describe_data_stack; then
   DATA_ACTION="STOP"

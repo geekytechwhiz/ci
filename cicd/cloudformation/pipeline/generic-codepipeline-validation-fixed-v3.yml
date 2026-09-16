@@ -129,8 +129,10 @@ Parameters:
 
   OwnershipTagPurpose:
     Type: String
-    Default: primaryDataTable
-    Description: Expected DynamoDB ownership tag Purpose value used by data preflight/recovery.
+    Default: ''
+    Description: >
+      Optional IAM/env hint for DynamoDB ownership tag Purpose. Runtime expected
+      Purpose is read from the service Data packaged template, not this default.
 
   SsmPrefix:
     Type: String
@@ -156,8 +158,11 @@ Parameters:
 
   DataLogicalId:
     Type: String
-    Default: PrimaryTable
-    Description: CloudFormation logical ID of the Data stack DynamoDB table.
+    Default: ''
+    Description: >
+      Optional hint for the Data stack DynamoDB logical ID. Runtime identity is
+      read from the service Data packaged template (WorkflowTable), not invented
+      as PrimaryTable.
 
 Conditions:
   HasOwnershipTagService:
@@ -217,6 +222,12 @@ Conditions:
     Fn::Not:
       - Fn::Equals:
           - Ref: DataTableName
+          - ''
+
+  HasDataLogicalId:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: DataLogicalId
           - ''
 
 Resources:
@@ -1793,6 +1804,7 @@ Resources:
                   echo "CURRENT_COMMIT=${CURRENT_COMMIT:?}"
                   echo "DATA_TABLE_NAME=${DATA_TABLE_NAME:-<from Data artifact>}"
                   echo "DATA_LOGICAL_ID=${DATA_LOGICAL_ID:-<from Data artifact>}"
+                  echo "RESOURCE_NAME_PREFIX=${RESOURCE_NAME_PREFIX:-<unset>}"
                   echo "SSM_PREFIX=${SSM_PREFIX:?}"
             build:
               commands:
@@ -1876,7 +1888,13 @@ Resources:
               - ''
           - Name: DATA_LOGICAL_ID
             Type: PLAINTEXT
-            Value: !Ref DataLogicalId
+            Value: !If
+              - HasDataLogicalId
+              - !Ref DataLogicalId
+              - ''
+          - Name: RESOURCE_NAME_PREFIX
+            Type: PLAINTEXT
+            Value: !Ref ResourceNamePrefix
           - Name: FRAMEWORK_PATH
             Type: PLAINTEXT
             Value: cicd/pipeline
@@ -2004,7 +2022,13 @@ Resources:
               - ''
           - Name: DATA_LOGICAL_ID
             Type: PLAINTEXT
-            Value: !Ref DataLogicalId
+            Value: !If
+              - HasDataLogicalId
+              - !Ref DataLogicalId
+              - ''
+          - Name: RESOURCE_NAME_PREFIX
+            Type: PLAINTEXT
+            Value: !Ref ResourceNamePrefix
           - Name: FRAMEWORK_PATH
             Type: PLAINTEXT
             Value: cicd/pipeline

@@ -183,7 +183,11 @@ if (!template || typeof template !== 'object') {
 }
 
 const resources = template.Resources || {};
-const logicalId = process.env.EXPECTED_LOGICAL_ID || 'PrimaryTable';
+const logicalId = process.env.EXPECTED_LOGICAL_ID;
+if (!logicalId) {
+  process.stdout.write('NO\nEXPECTED_LOGICAL_ID is required; Data packaged.yaml is the source of truth.');
+  process.exit(0);
+}
 const required = {
   [logicalId]: 'AWS::DynamoDB::Table',
 };

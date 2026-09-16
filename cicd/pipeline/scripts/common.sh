@@ -17,10 +17,14 @@ DATA_TABLE_NAME="${DATA_TABLE_NAME:-}"
 DATA_LOGICAL_ID="${DATA_LOGICAL_ID:-}"
 SSM_PREFIX="${SSM_PREFIX:-/${STAGE}/${SERVICE_NAME}}"
 LAST_DEPLOYED_COMMIT_PARAM="${LAST_DEPLOYED_COMMIT_PARAM:-/${STAGE}/${SERVICE_NAME}/cicd/LAST_DEPLOYED_COMMIT}"
+RESOURCE_NAME_PREFIX="${RESOURCE_NAME_PREFIX:-}"
 
-OWNERSHIP_TAG_SERVICE="${OWNERSHIP_TAG_SERVICE:-${SERVICE_NAME}}"
-OWNERSHIP_TAG_PURPOSE="${OWNERSHIP_TAG_PURPOSE:-${DATA_LOGICAL_ID}}"
-OWNERSHIP_TAG_MANAGED_BY="${OWNERSHIP_TAG_MANAGED_BY:-serverless}"
+# Ownership identity is filled from the service Data packaged template.
+# Pipeline/env OWNERSHIP_TAG_* values are hints only and are overwritten.
+OWNERSHIP_TAG_SERVICE="${OWNERSHIP_TAG_SERVICE:-}"
+OWNERSHIP_TAG_PURPOSE="${OWNERSHIP_TAG_PURPOSE:-}"
+OWNERSHIP_TAG_MANAGED_BY="${OWNERSHIP_TAG_MANAGED_BY:-}"
+OWNERSHIP_TAG_STAGE="${OWNERSHIP_TAG_STAGE:-}"
 
 # Resolve the service directory that owns packaged templates (data/, infrastructure/, serverless.yml).
 # Prefer an explicit SERVICE_DIR / SERVICE_ROOT. Otherwise derive from CI_PATH
@@ -253,11 +257,13 @@ fetch_immutable_packaged_template() {
   fi
 }
 
-# Resolve DynamoDB logical ID + physical TableName from the service artifact.
-# Does not invent names, does not apply ResourceNamePrefix to an explicit TableName.
+# Resolve DynamoDB logical ID, physical TableName, and identity tags from the
+# service Data packaged template. Does not invent names or tags, and does not
+# rewrite TableName with ResourceNamePrefix.
 apply_data_resource_identity_from_template() {
   local template_path="${1:-}"
-  local resolved hint_logical hint_table logical_id table_name
+  local resolved hint_logical hint_table hint_service hint_purpose hint_managed
+  local logical_id table_name tag_service tag_stage tag_purpose tag_managed
 
   if [ -z "$template_path" ] || [ ! -s "$template_path" ]; then
     echo "ERROR: Data packaged template is required to resolve the DynamoDB table identity." >&2
@@ -266,6 +272,9 @@ apply_data_resource_identity_from_template() {
 
   hint_logical="${DATA_LOGICAL_ID:-}"
   hint_table="${DATA_TABLE_NAME:-}"
+  hint_service="${OWNERSHIP_TAG_SERVICE:-}"
+  hint_purpose="${OWNERSHIP_TAG_PURPOSE:-}"
+  hint_managed="${OWNERSHIP_TAG_MANAGED_BY:-}"
 
   resolved="$(
     TEMPLATE_PATH="$template_path" \
@@ -299,15 +308,19 @@ if (hintLogical && resources[hintLogical] && resources[hintLogical].Type === 'AW
 } else if (hintLogical) {
   console.error('WARN: DATA_LOGICAL_ID=' + hintLogical + ' is not an AWS::DynamoDB::Table in the Data artifact; using the artifact table instead.');
 }
+if (!chosen && resources.WorkflowTable && resources.WorkflowTable.Type === 'AWS::DynamoDB::Table') {
+  chosen = { id: 'WorkflowTable', res: resources.WorkflowTable };
+}
 if (!chosen) {
   if (tables.length !== 1) {
-    console.error('ERROR: Data packaged template has ' + tables.length + ' DynamoDB tables; set DATA_LOGICAL_ID to the service logical ID.');
+    console.error('ERROR: Data packaged template has ' + tables.length + ' DynamoDB tables and no WorkflowTable resource.');
     process.exit(1);
   }
   chosen = tables[0];
 }
 
-const tableName = chosen.res.Properties && chosen.res.Properties.TableName;
+const props = chosen.res.Properties || {};
+const tableName = props.TableName;
 if (!tableName || typeof tableName !== 'string' || !tableName.trim()) {
   console.error('ERROR: ' + chosen.id + ' TableName is missing or not a literal string in the Data artifact.');
   process.exit(1);
@@ -316,17 +329,47 @@ if (tableName.includes('${') || tableName.includes('!Ref') || tableName.includes
   console.error('ERROR: ' + chosen.id + ' TableName is unresolved in the Data artifact: ' + tableName);
   process.exit(1);
 }
-process.stdout.write(chosen.id + '\t' + tableName.trim());
+
+function tagValue(tags, key) {
+  if (!Array.isArray(tags)) return '';
+  for (const t of tags) {
+    if (t && t.Key === key && typeof t.Value === 'string') return t.Value;
+  }
+  return '';
+}
+
+const tags = props.Tags || [];
+const identity = {
+  logicalId: chosen.id,
+  tableName: tableName.trim(),
+  service: tagValue(tags, 'Service'),
+  stage: tagValue(tags, 'Stage'),
+  purpose: tagValue(tags, 'Purpose'),
+  managedBy: tagValue(tags, 'ManagedBy'),
+};
+process.stdout.write(JSON.stringify(identity));
 NODE
   )" || return 1
 
-  logical_id="${resolved%%$'\t'*}"
-  table_name="${resolved#*$'\t'}"
+  logical_id="$(RESOLVED_JSON="$resolved" node -e 'process.stdout.write(JSON.parse(process.env.RESOLVED_JSON).logicalId || "")')"
+  table_name="$(RESOLVED_JSON="$resolved" node -e 'process.stdout.write(JSON.parse(process.env.RESOLVED_JSON).tableName || "")')"
+  tag_service="$(RESOLVED_JSON="$resolved" node -e 'process.stdout.write(JSON.parse(process.env.RESOLVED_JSON).service || "")')"
+  tag_stage="$(RESOLVED_JSON="$resolved" node -e 'process.stdout.write(JSON.parse(process.env.RESOLVED_JSON).stage || "")')"
+  tag_purpose="$(RESOLVED_JSON="$resolved" node -e 'process.stdout.write(JSON.parse(process.env.RESOLVED_JSON).purpose || "")')"
+  tag_managed="$(RESOLVED_JSON="$resolved" node -e 'process.stdout.write(JSON.parse(process.env.RESOLVED_JSON).managedBy || "")')"
 
-  if [ -z "$logical_id" ] || [ -z "$table_name" ] || [ "$logical_id" = "$resolved" ]; then
+  if [ -z "$logical_id" ] || [ -z "$table_name" ]; then
     echo "ERROR: Failed to parse DynamoDB identity from ${template_path}." >&2
     return 1
   fi
+
+  echo "Data resource identity from service artifact ${template_path}:"
+  echo "  logicalId=${logical_id}"
+  echo "  TableName=${table_name}"
+  echo "  tag Service=${tag_service:-<missing>}"
+  echo "  tag Stage=${tag_stage:-<missing>}"
+  echo "  tag Purpose=${tag_purpose:-<missing>}"
+  echo "  tag ManagedBy=${tag_managed:-<missing>}"
 
   if [ -n "$hint_table" ] && [ "$hint_table" != "$table_name" ]; then
     echo "INFO: Ignoring pipeline/env DATA_TABLE_NAME='${hint_table}'."
@@ -335,14 +378,52 @@ NODE
   if [ -n "$hint_logical" ] && [ "$hint_logical" != "$logical_id" ]; then
     echo "INFO: Using Data artifact logical ID '${logical_id}' (env had '${hint_logical}')."
   fi
+  if [ -n "$hint_service" ] && [ "$hint_service" != "$tag_service" ]; then
+    echo "INFO: Ignoring pipeline/env OWNERSHIP_TAG_SERVICE='${hint_service}'."
+  fi
+  if [ -n "$hint_purpose" ] && [ "$hint_purpose" != "$tag_purpose" ]; then
+    echo "INFO: Ignoring pipeline/env OWNERSHIP_TAG_PURPOSE='${hint_purpose}'."
+  fi
+  if [ -n "$hint_managed" ] && [ "$hint_managed" != "$tag_managed" ]; then
+    echo "INFO: Ignoring pipeline/env OWNERSHIP_TAG_MANAGED_BY='${hint_managed}'."
+  fi
 
   DATA_LOGICAL_ID="$logical_id"
   DATA_TABLE_NAME="$table_name"
-  if [ -z "${OWNERSHIP_TAG_PURPOSE:-}" ]; then
-    OWNERSHIP_TAG_PURPOSE="$DATA_LOGICAL_ID"
+  OWNERSHIP_TAG_SERVICE="$tag_service"
+  OWNERSHIP_TAG_STAGE="$tag_stage"
+  OWNERSHIP_TAG_PURPOSE="$tag_purpose"
+  OWNERSHIP_TAG_MANAGED_BY="$tag_managed"
+  export DATA_LOGICAL_ID DATA_TABLE_NAME
+  export OWNERSHIP_TAG_SERVICE OWNERSHIP_TAG_STAGE OWNERSHIP_TAG_PURPOSE OWNERSHIP_TAG_MANAGED_BY
+  echo "Using expected DynamoDB identity from packaged.yaml: logicalId=${DATA_LOGICAL_ID} tableName=${DATA_TABLE_NAME} Service=${OWNERSHIP_TAG_SERVICE:-<missing>} Stage=${OWNERSHIP_TAG_STAGE:-<missing>} Purpose=${OWNERSHIP_TAG_PURPOSE:-<missing>} ManagedBy=${OWNERSHIP_TAG_MANAGED_BY:-<missing>}"
+
+  if [ -z "$tag_service" ] || [ -z "$tag_stage" ] || [ -z "$tag_purpose" ] || [ -z "$tag_managed" ]; then
+    echo "ERROR: ${logical_id} is missing required identity tags Service, Stage, Purpose, and ManagedBy in the Data artifact." >&2
+    echo "ERROR: The generic pipeline will not invent ownership tags." >&2
+    return 1
   fi
-  export DATA_LOGICAL_ID DATA_TABLE_NAME OWNERSHIP_TAG_PURPOSE
-  echo "Data resource identity from service artifact: logicalId=${DATA_LOGICAL_ID} tableName=${DATA_TABLE_NAME}"
+
+  if [ -n "${STAGE:-}" ] && [ "$tag_stage" != "$STAGE" ]; then
+    echo "ERROR: Artifact tag Stage='${tag_stage}' does not match pipeline STAGE='${STAGE}'." >&2
+    echo "ERROR: The generic pipeline will not override the service-generated Stage tag." >&2
+    return 1
+  fi
+
+  if [ -z "${RESOURCE_NAME_PREFIX:-}" ]; then
+    echo "ERROR: RESOURCE_NAME_PREFIX is required to validate the service-generated TableName." >&2
+    echo "ERROR: The pipeline must not invent or rewrite DynamoDB table names." >&2
+    return 1
+  fi
+  case "$table_name" in
+    "${RESOURCE_NAME_PREFIX}"*)
+      ;;
+    *)
+      echo "ERROR: Service-generated TableName '${table_name}' does not comply with mandatory resource name prefix '${RESOURCE_NAME_PREFIX}'." >&2
+      echo "ERROR: Preflight will not rename or override the artifact TableName." >&2
+      return 1
+      ;;
+  esac
 }
 
 upload_environment_artifact() {
@@ -691,5 +772,6 @@ export SERVICE_NAME STAGE AWS_REGION
 export APP_STACK_NAME STACK_NAME="${STACK_NAME:-$APP_STACK_NAME}"
 export DATA_STACK_NAME INFRA_STACK_NAME DATA_TABLE_NAME DATA_LOGICAL_ID
 export SSM_PREFIX LAST_DEPLOYED_COMMIT_PARAM
-export OWNERSHIP_TAG_SERVICE OWNERSHIP_TAG_PURPOSE OWNERSHIP_TAG_MANAGED_BY
+export OWNERSHIP_TAG_SERVICE OWNERSHIP_TAG_STAGE OWNERSHIP_TAG_PURPOSE OWNERSHIP_TAG_MANAGED_BY
+export RESOURCE_NAME_PREFIX
 export SERVICE_ROOT SERVICE_DIR
