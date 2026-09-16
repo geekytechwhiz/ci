@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # PACKAGE ONLY. Writes:
 #   data/packaged.yaml
 #   infra/packaged.yaml
@@ -25,21 +25,63 @@ case "$STAGE" in
     ;;
 esac
 
-validate_prerequisites() {
-  if [ ! -d data ] || [ ! -d infra ] || [ ! -f serverless.yml ]; then
-    echo "ERROR: SERVICE_DIR=$SERVICE_DIR is not the workflow service root (need data/, infra/, serverless.yml)" >&2
-    exit 1
-  fi
-  if [ ! -f data/serverless.data.yml ]; then
-    echo "ERROR: missing data deployment source: data/serverless.data.yml" >&2
-    exit 1
-  fi
-  if [ ! -f infra/serverless.infra.yml ]; then
-    echo "ERROR: missing infra deployment source: infra/serverless.infra.yml" >&2
-    exit 1
-  fi
-  mkdir -p app
+export CI="${CI:-true}"
+export SLS_INTERACTIVE_SETUP_ENABLE="${SLS_INTERACTIVE_SETUP_ENABLE:-0}"
+export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=2048}"
+
+SERVERLESS_VERSION="${SERVERLESS_VERSION:-3.40.0}"
+SERVERLESS_BIN="$SERVICE_DIR/node_modules/.bin/serverless"
+
+DATA_STACK_NAME="${DATA_STACK_NAME:-${STAGE}-workflow-service-data}"
+INFRA_STACK_NAME="${INFRA_STACK_NAME:-${STAGE}-workflow-service-infra}"
+APP_STACK_NAME="${APP_STACK_NAME:-${STACK_NAME:-${STAGE}-workflow-service}}"
+
+###############################################################################
+# 1. Validate prerequisites
+###############################################################################
+
+echo "[BUILD] Validating prerequisites"
+
+command -v node >/dev/null 2>&1 || {
+  echo "ERROR: node is required" >&2
+  exit 1
 }
+command -v npm >/dev/null 2>&1 || {
+  echo "ERROR: npm is required" >&2
+  exit 1
+}
+
+if [ ! -d data ] || [ ! -d infra ] || [ ! -f serverless.yml ]; then
+  echo "ERROR: SERVICE_DIR=$SERVICE_DIR is not the workflow service root (need data/, infra/, serverless.yml)" >&2
+  exit 1
+fi
+
+if [ ! -f data/serverless.data.yml ] || [ ! -f data/resources/data.yml ]; then
+  echo "ERROR: missing data deployment source" >&2
+  exit 1
+fi
+
+if [ ! -f infra/serverless.infra.yml ] || [ ! -f infra/resources/infra.yml ]; then
+  echo "ERROR: missing infra deployment source" >&2
+  exit 1
+fi
+
+if [ ! -f serverless.yml ] || [ ! -d src ]; then
+  echo "ERROR: missing app deployment source" >&2
+  exit 1
+fi
+
+mkdir -p app
+
+echo "SERVICE_DIR=$SERVICE_DIR"
+echo "STAGE=$STAGE"
+echo "DATA_STACK_NAME=$DATA_STACK_NAME"
+echo "INFRA_STACK_NAME=$INFRA_STACK_NAME"
+echo "APP_STACK_NAME=$APP_STACK_NAME"
+
+###############################################################################
+# Helpers
+###############################################################################
 
 strip_cfn_outputs() {
   local path="$1"
@@ -77,30 +119,31 @@ validate_packaged_template() {
   local label="$2"
 
   if [ ! -s "$path" ]; then
-    echo "ERROR: $label was not generated" >&2
+    echo "ERROR: ${label} was not generated" >&2
     exit 1
   fi
 
   node -e '
     const fs = require("fs");
     const file = process.argv[1];
+    const label = process.argv[2];
     const raw = fs.readFileSync(file, "utf8");
     let tpl;
     try {
       tpl = JSON.parse(raw);
     } catch (err) {
-      console.error(`ERROR: ${file} is not valid JSON CloudFormation output: ${err.message}`);
+      console.error(`ERROR: ${label} is not valid JSON CloudFormation output: ${err.message}`);
       process.exit(1);
     }
     if (!tpl || typeof tpl !== "object" || !tpl.Resources || typeof tpl.Resources !== "object") {
-      console.error(`ERROR: ${file} is missing CloudFormation Resources`);
+      console.error(`ERROR: ${label} is missing CloudFormation Resources`);
       process.exit(1);
     }
     if (Object.keys(tpl.Resources).length === 0) {
-      console.error(`ERROR: ${file} has no CloudFormation resources`);
+      console.error(`ERROR: ${label} has no CloudFormation resources`);
       process.exit(1);
     }
-  ' "$path"
+  ' "$path" "$label"
 }
 
 install_workflow_npm_deps() {
@@ -146,12 +189,51 @@ run_serverless() {
   "$SERVERLESS_BIN" "$@"
 }
 
-validate_prerequisites
+# The generic pipeline reads ${CODEBUILD_SRC_DIR}/{data,infra,app}/packaged.yaml.
+# When this service lives under a nested path (workflow/), copy artifacts there.
+publish_pipeline_contract() {
+  local contract_root="${CODEBUILD_SRC_DIR:-}"
+  if [ -z "$contract_root" ] || [ ! -d "$contract_root" ]; then
+    return 0
+  fi
 
-echo "SERVICE_DIR=$SERVICE_DIR"
-echo "STAGE=$STAGE"
+  local service_abs contract_abs
+  service_abs="$(cd "$SERVICE_DIR" && pwd)"
+  contract_abs="$(cd "$contract_root" && pwd)"
+  if [ "$service_abs" = "$contract_abs" ]; then
+    return 0
+  fi
 
-echo "Cleaning old artifacts..."
+  echo "[BUILD] Copying artifacts to pipeline workspace: $contract_abs"
+  mkdir -p "$contract_abs/data" "$contract_abs/infra" "$contract_abs/app"
+  cp -f "$SERVICE_DIR/data/packaged.yaml" "$contract_abs/data/packaged.yaml"
+  cp -f "$SERVICE_DIR/infra/packaged.yaml" "$contract_abs/infra/packaged.yaml"
+  cp -f "$SERVICE_DIR/app/packaged.yaml" "$contract_abs/app/packaged.yaml"
+
+  test -s "$contract_abs/data/packaged.yaml" || {
+    echo "ERROR: data/packaged.yaml was not generated" >&2
+    exit 1
+  }
+  test -s "$contract_abs/infra/packaged.yaml" || {
+    echo "ERROR: infra/packaged.yaml was not generated" >&2
+    exit 1
+  }
+  test -s "$contract_abs/app/packaged.yaml" || {
+    echo "ERROR: app/packaged.yaml was not generated" >&2
+    exit 1
+  }
+
+  echo "Pipeline contract artifacts:"
+  ls -la "$contract_abs/data/packaged.yaml" \
+    "$contract_abs/infra/packaged.yaml" \
+    "$contract_abs/app/packaged.yaml"
+}
+
+###############################################################################
+# Clean previous generated artifacts
+###############################################################################
+
+echo "[BUILD] Cleaning generated packaging output"
 rm -rf .serverless
 rm -rf app/.serverless
 rm -f app/packaged.yaml
@@ -161,29 +243,26 @@ rm -rf infra/.serverless
 rm -f infra/packaged.yaml
 rm -f packaged.yaml
 
-export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=2048}"
-SERVERLESS_VERSION="${SERVERLESS_VERSION:-3.40.0}"
-SERVERLESS_BIN="$SERVICE_DIR/node_modules/.bin/serverless"
-
 if command -v free >/dev/null 2>&1; then
   echo "Container memory:"
   free -h || true
 fi
 
+###############################################################################
+# 2. Install dependencies
+###############################################################################
+
+echo "[BUILD] Installing dependencies"
+
 if [ -n "${CODEBUILD_BUILD_ID:-}" ] || [ ! -x "$SERVERLESS_BIN" ] || [ ! -d "$SERVICE_DIR/node_modules/serverless-esbuild" ]; then
   install_workflow_npm_deps
 else
-  echo "[BUILD] No root build script found; skipping application compilation"
+  echo "Using existing node_modules (serverless-esbuild already present)"
 fi
 
-###############################################################################
-# Validate deployment source templates
-###############################################################################
-
-echo "[BUILD] Validating deployment templates"
-
-test -f "$DATA_TEMPLATE" || {
-  echo "ERROR: missing $DATA_TEMPLATE" >&2
+if [ ! -x "$SERVERLESS_BIN" ]; then
+  echo "ERROR: serverless CLI missing at $SERVERLESS_BIN after npm install." >&2
+  echo "ERROR: Do not fall back to npx serverless — that CLI cannot load workflow plugins." >&2
   exit 1
 fi
 
@@ -196,38 +275,29 @@ echo "$SLS_VERSION_OUT"
 if ! echo "$SLS_VERSION_OUT" | grep -qE 'Framework Core: 3\.'; then
   echo "ERROR: Workflow packaging requires Serverless Framework 3.x (got incompatible CLI)." >&2
   exit 1
-}
-
-test -f "$APP_TEMPLATE" || {
-  echo "ERROR: missing $APP_TEMPLATE" >&2
-  exit 1
-}
+fi
 
 ###############################################################################
-# Clean previous generated artifacts
+# 3. Build application source
+# Compilation is performed by serverless-esbuild during app packaging.
+# A root `npm run build` is used only when the service defines that script.
 ###############################################################################
 
-echo "[BUILD] Cleaning generated packaging output"
+echo "[BUILD] Building application source"
 
-rm -f "$DATA_DIR/packaged.yaml"
-rm -f "$INFRA_DIR/packaged.yaml"
-rm -f "$APP_DIR/packaged.yaml"
-
-rm -rf "$DATA_DIR/.serverless"
-rm -rf "$INFRA_DIR/.serverless"
-rm -rf "$APP_DIR/.serverless"
+if node -e 'process.exit(require("./package.json").scripts && require("./package.json").scripts.build ? 0 : 1)'; then
+  npm run build
+else
+  echo "[BUILD] No npm build script; TypeScript is compiled by serverless-esbuild during app packaging"
+fi
 
 ###############################################################################
-# Package DATA
+# 4. Package DATA
 ###############################################################################
 
 echo "============================================================"
 echo "[PACKAGE] DATA"
 echo "============================================================"
-
-DATA_STACK_NAME="${DATA_STACK_NAME:-${STAGE}-workflow-service-data}"
-INFRA_STACK_NAME="${INFRA_STACK_NAME:-${STAGE}-workflow-service-infra}"
-APP_STACK_NAME="${APP_STACK_NAME:-${STACK_NAME:-${STAGE}-workflow-service}}"
 
 echo "Packaging data stack ($DATA_STACK_NAME)..."
 if ! (
@@ -241,6 +311,18 @@ if ! (
   exit 1
 fi
 copy_packaged_template data/.serverless data/packaged.yaml
+if [ ! -s data/packaged.yaml ]; then
+  echo "ERROR: data/packaged.yaml was not generated" >&2
+  exit 1
+fi
+
+###############################################################################
+# 5. Package INFRA
+###############################################################################
+
+echo "============================================================"
+echo "[PACKAGE] INFRA"
+echo "============================================================"
 
 echo "Packaging infra stack ($INFRA_STACK_NAME)..."
 if ! (
@@ -254,6 +336,20 @@ if ! (
   exit 1
 fi
 copy_packaged_template infra/.serverless infra/packaged.yaml
+if [ ! -s infra/packaged.yaml ]; then
+  echo "ERROR: infra/packaged.yaml was not generated" >&2
+  exit 1
+fi
+
+###############################################################################
+# 6. Package APP
+# Application Serverless config stays at the service root so src/, config/,
+# package.json, and ../infra/serverless shared files keep resolving.
+###############################################################################
+
+echo "============================================================"
+echo "[PACKAGE] APP"
+echo "============================================================"
 
 echo "Packaging application stack ($APP_STACK_NAME) (NODE_OPTIONS=$NODE_OPTIONS)..."
 if ! run_serverless package \
@@ -263,6 +359,10 @@ if ! run_serverless package \
   exit 1
 fi
 copy_packaged_template .serverless app/packaged.yaml
+if [ ! -s app/packaged.yaml ]; then
+  echo "ERROR: app/packaged.yaml was not generated" >&2
+  exit 1
+fi
 
 mkdir -p app/.serverless
 if compgen -G ".serverless/*.zip" > /dev/null; then
@@ -285,9 +385,8 @@ for (const res of Object.values(tpl.Resources || {})) {
   if (code && code.S3Key) keys.add(code.S3Key);
 }
 
-cp \
-  "$DATA_DIR/.serverless/cloudformation-template-update-stack.json" \
-  "$DATA_DIR/packaged.yaml"
+for (const key of [...keys].sort()) console.log(key);
+NODE
 
 if [ ! -s app/.serverless/s3keys.txt ]; then
   echo "WARN: No S3Key entries found in app template — Serverless may have used inline ZipFile or a different layout."
@@ -300,20 +399,45 @@ else
     zip_name=$(basename "${key%%@*}")
     local_path="app/.serverless/$zip_name"
     if [ ! -f "$local_path" ]; then
-      echo "ERROR: Local artifact not found: $local_path (key: $key)"
+      echo "ERROR: Local artifact not found: $local_path (key: $key)" >&2
       exit 1
     fi
   done < app/.serverless/s3keys.txt
 fi
 
-for artifact in data/packaged.yaml infra/packaged.yaml app/packaged.yaml; do
-  validate_packaged_template "$artifact" "$artifact"
-done
+###############################################################################
+# 7. Validate generated artifacts
+###############################################################################
+
+echo "============================================================"
+echo "[BUILD] Validating standard artifact contract"
+echo "============================================================"
+
+test -s data/packaged.yaml || {
+  echo "ERROR: data/packaged.yaml was not generated" >&2
+  exit 1
+}
+test -s infra/packaged.yaml || {
+  echo "ERROR: infra/packaged.yaml was not generated" >&2
+  exit 1
+}
+test -s app/packaged.yaml || {
+  echo "ERROR: app/packaged.yaml was not generated" >&2
+  exit 1
+}
+
+validate_packaged_template data/packaged.yaml data/packaged.yaml
+validate_packaged_template infra/packaged.yaml infra/packaged.yaml
+validate_packaged_template app/packaged.yaml app/packaged.yaml
+
+publish_pipeline_contract
 
 echo "[BUILD] Generated artifacts:"
+echo ""
 echo "data/packaged.yaml"
 echo "infra/packaged.yaml"
 echo "app/packaged.yaml"
+echo ""
 ls -la "$SERVICE_DIR/data/packaged.yaml" \
   "$SERVICE_DIR/infra/packaged.yaml" \
   "$SERVICE_DIR/app/packaged.yaml"

@@ -1,2 +1,0 @@
-serverless/workflow-service/dev/1789546853511-2026-09-16T08:20:53.511Z/api.zip
-serverless/workflow-service/dev/1789546853511-2026-09-16T08:20:53.511Z/events.zip

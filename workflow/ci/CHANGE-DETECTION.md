@@ -114,11 +114,11 @@ Classification uses the first matching category. `README.md` and other documenta
 
 | Category | Paths | Layer flags after dependency rules |
 |----------|--------|--------------------------------------|
-| **Data** | `apps/workflow-service/data/**`, `config/data-*` (reserved for data-only config) | Data + App |
-| **Infra** | `apps/workflow-service/infrastructure/**`, `config/infra-*.yml` | Infra + App |
+| **Data** | `data/**`, `config/data-*` (reserved for data-only config) | Data + App |
+| **Infra** | `infra/**`, `config/infra-*.yml` | Infra + App |
 | **App** | `src/**`, `serverless.yml`, `config/runtime-*.yml`, other app config (`config/app-custom.yml`, `config/permissions/**`, `config/ssm-paths.yml`, `config/resources/**`), remaining service-root runtime files (`swagger.json`, `tsconfig*`, `jest*`, `esbuild-plugins.js`) | App |
-| **CI/CD** | `apps/workflow-service/ci/**` (except documentation), `buildspec.yml`, `stg-buildspec.yml`, `prd-buildspec.yml`, `package.json` | Data + Infra + App |
-| **Docs** | `README.md` at any depth, `*.md`, `apps/workflow-service/doc/**`, repo `docs/**` | none |
+| **CI/CD** | `ci/**` (except documentation), `buildspec.yml`, `stg-buildspec.yml`, `prd-buildspec.yml`, `package.json` | Data + Infra + App |
+| **Docs** | `README.md` at any depth, `*.md`, `doc/**`, repo `docs/**` | none |
 
 Files outside this service (`libs/**`, other `apps/**`, shared `infra/**`) are ignored and do not set any flag.
 
@@ -144,7 +144,7 @@ Mixed change sets union the flags. Docs in the same set as a deployable path do 
 
 ### Why docs-only deploys nothing
 
-Markdown, README files, `doc/`, and repo `docs/` do not change CloudFormation templates or Lambda artifacts. They must not start Data, Infra, or App deploys. `README.md` under `data/`, `infrastructure/`, or `ci/` is still documentation.
+Markdown, README files, `doc/`, and repo `docs/` do not change CloudFormation templates or Lambda artifacts. They must not start Data, Infra, or App deploys. `README.md` under `data/`, `infra/`, or `ci/` is still documentation.
 
 ### Examples
 
@@ -152,14 +152,14 @@ Markdown, README files, `doc/`, and repo `docs/` do not change CloudFormation te
 |---------------|------|-------|-----|
 | `src/handler.ts` | false | false | true |
 | `data/resources/data.yml` | true | false | true |
-| `infrastructure/resources/sqs.yml` | false | true | true |
+| `infra/resources/infra.yml` | false | true | true |
 | `config/infra-dev.yml` | false | true | true |
 | `config/runtime-dev.yml` | false | false | true |
 | `ci/deploy-data.sh` | true | true | true |
 | `package.json` | true | true | true |
 | `README.md` | false | false | false |
 | `docs/services/workflow-service/CICD.md` | false | false | false |
-| `src/handler.ts` + `infrastructure/resources/sqs.yml` | false | true | true |
+| `src/handler.ts` + `infra/resources/infra.yml` | false | true | true |
 | `data/resources/data.yml` + `README.md` | true | false | true |
 
 ---

@@ -74,7 +74,7 @@ The application stack (not this directory) is a lightweight POC: one API Lambda 
 ## Package locally
 
 ```bash
-cd apps/workflow-service/infra
+cd infra
 npx serverless print --config serverless.infra.yml --stage dev
 npx serverless package --config serverless.infra.yml --stage dev --package .serverless
 ```

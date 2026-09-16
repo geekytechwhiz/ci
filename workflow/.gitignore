@@ -1,0 +1,13 @@
+# Generated Serverless / CI packaging artifacts (not source-of-truth)
+.serverless/
+**/.serverless/
+data/packaged.yaml
+infra/packaged.yaml
+app/packaged.yaml
+
+# Dependencies and local env
+node_modules/
+.env
+.env.*
+*.log
+.DS_Store
