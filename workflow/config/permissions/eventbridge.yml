@@ -2,4 +2,4 @@ Effect: Allow
 Action:
   - events:PutEvents
 Resource:
-  - '{{resolve:ssm:${self:custom.naming.ssmPrefix}/EVENT_BUS_ARN}}'
+  - arn:aws:events:${aws:region}:${aws:accountId}:event-bus/${self:custom.naming.eventBusName}

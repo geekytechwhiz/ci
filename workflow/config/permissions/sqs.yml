@@ -5,4 +5,4 @@ Action:
   - sqs:GetQueueAttributes
   - sqs:ChangeMessageVisibility
 Resource:
-  - '{{resolve:ssm:${self:custom.naming.ssmPrefix}/SQS_QUEUE_ARN}}'
+  - arn:aws:sqs:${aws:region}:${aws:accountId}:${self:custom.naming.queueName}

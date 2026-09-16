@@ -5,4 +5,4 @@ Action:
   - dynamodb:DescribeStream
   - dynamodb:ListStreams
 Resource:
-  - '{{resolve:ssm:${self:custom.naming.ssmPrefix}/STREAM_ARN}}'
+  - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/${self:custom.naming.tableName}/stream/*

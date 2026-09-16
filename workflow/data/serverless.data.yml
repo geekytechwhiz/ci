@@ -1,6 +1,6 @@
 service: workflow-service-data
 
-configValidationMode: warn
+configValidationMode: error
 
 frameworkVersion: '3.x'
 
@@ -8,8 +8,13 @@ frameworkVersion: '3.x'
 # Owns the POC DynamoDB table and data SSM parameters.
 # No Lambda, API Gateway, SQS, SNS, EventBridge, or application plugins.
 
+plugins:
+  - ../ci/plugins/allow-nodejs22-runtime.js
+
 provider:
   name: aws
+  # Unused: this stack has no functions. Kept schema-valid and consistent with
+  # the application Node.js 22 runtime contract.
   runtime: nodejs22.x
   region: ${env:AWS_REGION, opt:region, 'us-east-1'}
   stage: ${opt:stage, 'dev'}

@@ -96,7 +96,9 @@ NODE
       exit 1
     fi
   else
-    echo "WARN: No S3Key entries found in application packaged.yaml"
+    echo "ERROR: No S3Key entries found in application packaged.yaml"
+    echo "ERROR: The application template must reference uploaded Lambda ZIP objects"
+    exit 1
   fi
 fi
 

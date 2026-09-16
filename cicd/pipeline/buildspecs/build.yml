@@ -12,6 +12,9 @@ env:
     - CURRENT_COMMIT
 
 phases:
+  install:
+    runtime-versions:
+      nodejs: 22
   pre_build:
     commands:
       - |

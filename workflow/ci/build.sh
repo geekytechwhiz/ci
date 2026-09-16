@@ -9,7 +9,7 @@
 set -euo pipefail
 
 echo "======================================="
-echo "[BUILD] STARTED (package only)"
+echo "[BUILD] STARTED (service packaging)"
 echo "======================================="
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -34,10 +34,11 @@ export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=2048}"
 SERVERLESS_VERSION="${SERVERLESS_VERSION:-3.40.0}"
 SERVERLESS_BIN="$SERVICE_DIR/node_modules/.bin/serverless"
 
-SERVICE_NAME="${SERVICE_NAME:-workflow-service}"
-DATA_STACK_NAME="${DATA_STACK_NAME:-${STAGE}-${SERVICE_NAME}-data}"
-INFRA_STACK_NAME="${INFRA_STACK_NAME:-${STAGE}-${SERVICE_NAME}-infra}"
-APP_STACK_NAME="${APP_STACK_NAME:-${STACK_NAME:-${STAGE}-${SERVICE_NAME}}}"
+SERVICE_NAME="${SERVICE_NAME:-}"
+APPLICATION_SERVICE_NAME="${APPLICATION_SERVICE_NAME:-workflow-service}"
+DATA_STACK_NAME="${DATA_STACK_NAME:-${STAGE}-${SERVICE_NAME:-$APPLICATION_SERVICE_NAME}-data}"
+INFRA_STACK_NAME="${INFRA_STACK_NAME:-${STAGE}-${SERVICE_NAME:-$APPLICATION_SERVICE_NAME}-infra}"
+APP_STACK_NAME="${APP_STACK_NAME:-${STACK_NAME:-${STAGE}-${SERVICE_NAME:-$APPLICATION_SERVICE_NAME}}}"
 
 ###############################################################################
 # 1. Validate prerequisites
@@ -81,6 +82,8 @@ echo "STAGE=$STAGE"
 echo "AWS_REGION=$AWS_REGION"
 echo "RESOURCE_NAME_PREFIX=${RESOURCE_NAME_PREFIX:-<unset>}"
 echo "SSM_PREFIX=${SSM_PREFIX:-<unset>}"
+echo "Pipeline identity SERVICE_NAME=${SERVICE_NAME:-<unset>}"
+echo "Application identity APPLICATION_SERVICE_NAME=${APPLICATION_SERVICE_NAME}"
 echo "DATA_STACK_NAME=$DATA_STACK_NAME"
 echo "INFRA_STACK_NAME=$INFRA_STACK_NAME"
 echo "APP_STACK_NAME=$APP_STACK_NAME"
@@ -211,10 +214,16 @@ publish_pipeline_contract() {
   fi
 
   echo "[BUILD] Copying artifacts to pipeline workspace: $contract_abs"
-  mkdir -p "$contract_abs/data" "$contract_abs/infra" "$contract_abs/app"
+  mkdir -p "$contract_abs/data" "$contract_abs/infra" "$contract_abs/app/.serverless"
   cp -f "$SERVICE_DIR/data/packaged.yaml" "$contract_abs/data/packaged.yaml"
   cp -f "$SERVICE_DIR/infra/packaged.yaml" "$contract_abs/infra/packaged.yaml"
   cp -f "$SERVICE_DIR/app/packaged.yaml" "$contract_abs/app/packaged.yaml"
+  if [ -f "$SERVICE_DIR/app/.serverless/lambda-artifacts.json" ]; then
+    cp -f "$SERVICE_DIR/app/.serverless/lambda-artifacts.json" "$contract_abs/app/.serverless/lambda-artifacts.json"
+  fi
+  if compgen -G "$SERVICE_DIR/app/.serverless/*.zip" > /dev/null; then
+    cp -f "$SERVICE_DIR/app/.serverless/"*.zip "$contract_abs/app/.serverless/"
+  fi
 
   test -s "$contract_abs/data/packaged.yaml" || {
     echo "ERROR: data/packaged.yaml was not generated" >&2
@@ -306,7 +315,8 @@ chmod +x "$SCRIPT_DIR/generate-naming.sh"
 RESOURCE_NAME_PREFIX="${RESOURCE_NAME_PREFIX:-}" \
 SSM_PREFIX="${SSM_PREFIX:-}" \
 STAGE="$STAGE" \
-SERVICE_NAME="$SERVICE_NAME" \
+SERVICE_NAME="${SERVICE_NAME:-}" \
+APPLICATION_SERVICE_NAME="$APPLICATION_SERVICE_NAME" \
 AWS_REGION="$AWS_REGION" \
 bash "$SCRIPT_DIR/generate-naming.sh"
 
@@ -422,45 +432,41 @@ if [ ! -s app/packaged.yaml ]; then
 fi
 
 mkdir -p app/.serverless
-if compgen -G ".serverless/*.zip" > /dev/null; then
-  cp .serverless/*.zip app/.serverless/
+DISCOVER_JS="$SERVICE_DIR/../cicd/pipeline/scripts/discover-lambda-artifacts.cjs"
+if [ ! -f "$DISCOVER_JS" ]; then
+  echo "ERROR: Lambda artifact discovery script not found: $DISCOVER_JS" >&2
+  exit 1
 fi
 
-echo "Extracting Lambda S3 keys from the packaged application template..."
-node <<'NODE' > app/.serverless/s3keys.txt
-const fs = require('fs');
-const raw = fs.readFileSync('.serverless/' + (
-  fs.existsSync('.serverless/cloudformation-template-update-stack.json')
-    ? 'cloudformation-template-update-stack.json'
-    : 'cloudformation-template-create-stack.json'
-), 'utf8');
-const tpl = JSON.parse(raw);
-const keys = new Set();
+echo "Discovering Lambda ZIP artifacts from the packaged application template..."
+SEARCH_DIRS=".serverless:app/.serverless" \
+  node "$DISCOVER_JS" app/packaged.yaml --require-zips \
+  > app/.serverless/lambda-artifacts.json
 
-for (const res of Object.values(tpl.Resources || {})) {
-  const code = res.Properties && res.Properties.Code;
-  if (code && code.S3Key) keys.add(code.S3Key);
-}
+DISCOVERY="$(cat app/.serverless/lambda-artifacts.json)"
+DISCOVERY="$DISCOVERY" DEST_DIR="app/.serverless" node -e '
+  const fs = require("fs");
+  const path = require("path");
+  const data = JSON.parse(process.env.DISCOVERY);
+  const destDir = process.env.DEST_DIR;
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const art of data.artifacts || []) {
+    const dest = path.join(destDir, art.zipName);
+    if (path.resolve(art.localPath) !== path.resolve(dest)) {
+      fs.copyFileSync(art.localPath, dest);
+    }
+    if (!fs.existsSync(dest) || !fs.statSync(dest).size) {
+      console.error(`ERROR: Failed to stage Lambda artifact ${dest}`);
+      process.exit(1);
+    }
+  }
+'
 
-for (const key of [...keys].sort()) console.log(key);
-NODE
-
-if [ ! -s app/.serverless/s3keys.txt ]; then
-  echo "WARN: No S3Key entries found in app template — Serverless may have used inline ZipFile or a different layout."
-  ls -la .serverless/ || true
-else
-  echo "Lambda zip keys (local app/.serverless artifacts):"
-  cat app/.serverless/s3keys.txt
-  while read -r key; do
-    [ -z "$key" ] && continue
-    zip_name=$(basename "${key%%@*}")
-    local_path="app/.serverless/$zip_name"
-    if [ ! -f "$local_path" ]; then
-      echo "ERROR: Local artifact not found: $local_path (key: $key)" >&2
-      exit 1
-    fi
-  done < app/.serverless/s3keys.txt
-fi
+echo "Staged Lambda artifacts in app/.serverless:"
+DISCOVERY="$DISCOVERY" node -e '
+  const data = JSON.parse(process.env.DISCOVERY);
+  for (const art of data.artifacts || []) console.log(`  ${art.zipName}`);
+'
 
 ###############################################################################
 # 7. Validate generated artifacts
@@ -494,11 +500,13 @@ echo ""
 echo "data/packaged.yaml"
 echo "infra/packaged.yaml"
 echo "app/packaged.yaml"
+echo "app/.serverless/*.zip"
 echo ""
 ls -la "$SERVICE_DIR/data/packaged.yaml" \
   "$SERVICE_DIR/infra/packaged.yaml" \
   "$SERVICE_DIR/app/packaged.yaml"
+ls -la "$SERVICE_DIR/app/.serverless"/*.zip "$SERVICE_DIR/app/.serverless/lambda-artifacts.json"
 
 echo "======================================="
-echo "BUILD SUCCESSFUL"
+echo "SERVICE PACKAGING COMPLETED"
 echo "======================================="

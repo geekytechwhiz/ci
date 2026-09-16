@@ -95,7 +95,13 @@ Description: >
 Parameters:
   ServiceName:
     Type: String
-    Description: Logical service name used to derive pipeline, role, stack, SSM, artifact and CodeBuild resource names.
+    Description: >
+      Pipeline project identity used for CodePipeline, CodeBuild projects, IAM
+      roles, pipeline SSM under /{Stage}/{ServiceName}/cicd/*, and the immutable
+      artifact prefix {ServiceName}/{commit}. Distinct from the application
+      Serverless service name (workflow-service) used for physical AWS resource
+      names. Keep SsmPrefix and ResourceNamePrefix pointed at the application
+      naming contract when this value differs.
     AllowedPattern: '^[a-z0-9][a-z0-9-]{1,62}$'
 
   Stage:
@@ -1902,6 +1908,9 @@ Resources:
               - CURRENT_COMMIT
 
           phases:
+            install:
+              runtime-versions:
+                nodejs: 22
             build:
               commands:
                 - |
@@ -1960,19 +1969,24 @@ Resources:
                     DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
 
                   PREFIX="${!SERVICE_NAME}/${!CURRENT_COMMIT}"
-                  cat > artifact-manifest.json <<EOF
+                  if [ ! -f artifact-manifest.json ]; then
+                    echo "WARN: run-build.sh did not write artifact-manifest.json; generating fallback"
+                    cat > artifact-manifest.json <<EOF
                   {
                     "service": "${!SERVICE_NAME}",
+                    "pipelineServiceName": "${!SERVICE_NAME}",
+                    "applicationServiceName": "workflow-service",
                     "stage": "${!STAGE}",
                     "commit": "${!CURRENT_COMMIT}",
                     "artifactBucket": "${!ARTIFACT_BUCKET}",
-                    "artifactPrefix": "${!PREFIX}/",
+                    "artifactPrefix": "${!PREFIX}",
                     "data": "${!PREFIX}/data/packaged.yaml",
                     "infra": "${!PREFIX}/infra/packaged.yaml",
                     "app": "${!PREFIX}/app/packaged.yaml",
                     "dataImportManifest": "${!PREFIX}/data/import-manifest.json"
                   }
                   EOF
+                  fi
 
                   printf \
                     'CURRENT_COMMIT=%s\nARTIFACT_PREFIX=s3://%s/%s/\n' \

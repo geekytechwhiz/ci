@@ -16,13 +16,9 @@ INFRA_STACK_NAME="${INFRA_STACK_NAME:-${STAGE}-${SERVICE_NAME}-infra}"
 DATA_TABLE_NAME="${DATA_TABLE_NAME:-}"
 DATA_LOGICAL_ID="${DATA_LOGICAL_ID:-}"
 RESOURCE_NAME_PREFIX="${RESOURCE_NAME_PREFIX:-}"
-if [ -z "${SSM_PREFIX:-}" ]; then
-  if [ -n "${RESOURCE_NAME_PREFIX}" ]; then
-    SSM_PREFIX="/${RESOURCE_NAME_PREFIX}/${SERVICE_NAME}"
-  else
-    SSM_PREFIX="/${STAGE}/${SERVICE_NAME}"
-  fi
-fi
+APPLICATION_SERVICE_NAME="${APPLICATION_SERVICE_NAME:-}"
+# SSM_PREFIX is supplied by the pipeline when possible. If empty, derive it
+# after SERVICE_DIR is known using application identity — not pipeline SERVICE_NAME.
 LAST_DEPLOYED_COMMIT_PARAM="${LAST_DEPLOYED_COMMIT_PARAM:-/${STAGE}/${SERVICE_NAME}/cicd/LAST_DEPLOYED_COMMIT}"
 
 # Ownership identity is filled from the service Data packaged template.
@@ -73,6 +69,21 @@ if [ -z "${SERVICE_ROOT:-}" ]; then
 fi
 SERVICE_DIR="${SERVICE_DIR:-$SERVICE_ROOT}"
 unset -f _resolve_service_root_from_ci_path
+
+# Application identity (Serverless service + physical resource names) is distinct
+# from pipeline SERVICE_NAME (CodePipeline project / artifact prefix).
+if [ -z "${APPLICATION_SERVICE_NAME}" ] && [ -f "${SERVICE_DIR}/serverless.yml" ]; then
+  APPLICATION_SERVICE_NAME="$(awk '/^service:[[:space:]]*/ { print $2; exit }' "${SERVICE_DIR}/serverless.yml")"
+fi
+APPLICATION_SERVICE_NAME="${APPLICATION_SERVICE_NAME:-workflow-service}"
+
+if [ -z "${SSM_PREFIX:-}" ]; then
+  if [ -n "${RESOURCE_NAME_PREFIX}" ]; then
+    SSM_PREFIX="/${RESOURCE_NAME_PREFIX}/${APPLICATION_SERVICE_NAME}"
+  else
+    SSM_PREFIX="/${STAGE}/${APPLICATION_SERVICE_NAME}"
+  fi
+fi
 
 # Comma-separated list → bash array. Empty → empty array (validate-ssm may warn/skip).
 REQUIRED_SSM_PARAMS=()
@@ -260,6 +271,18 @@ sha256_file() {
     echo "ERROR: No sha256 tool available (sha256sum, shasum, openssl, or node)." >&2
     return 1
   fi
+}
+
+# Discover Lambda ZIPs from the packaged application template + Serverless output.
+discover_lambda_artifacts_json() {
+  local template="${1:?packaged template required}"
+  local script
+  script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/discover-lambda-artifacts.cjs"
+  if [ ! -f "$script" ]; then
+    echo "ERROR: discover-lambda-artifacts.cjs not found at $script" >&2
+    return 1
+  fi
+  SEARCH_DIRS="${SEARCH_DIRS:-.serverless:app/.serverless}" node "$script" "$template" --require-zips
 }
 
 # Download the exact packaged template published by Build for this commit.
@@ -510,18 +533,25 @@ delete_failed_cfn_stack_record() {
 upload_environment_artifact() {
   local local_path="$1"
   local key="$2"
-  local bucket
+  local bucket local_sha remote_sha
 
   bucket="$(environment_artifact_bucket)"
+  local_sha="$(sha256_file "$local_path")"
 
   echo "Publishing $local_path → s3://${bucket}/${key} (SSE-S3 AES256)"
 
-  if aws s3api head-object --bucket "$bucket" --key "$key" >/dev/null 2>&1; then
+  if aws s3api head-object --bucket "$bucket" --key "$key" >/tmp/s3-head-object.json 2>/dev/null; then
+    remote_sha="$(HEAD_JSON="$(cat /tmp/s3-head-object.json)" node -e 'const o=JSON.parse(process.env.HEAD_JSON||"{}"); process.stdout.write((o.Metadata&& (o.Metadata.sha256||o.Metadata.Sha256))||"")')"
+    if [ -n "$remote_sha" ] && [ "$remote_sha" = "$local_sha" ]; then
+      echo "Already published s3://${bucket}/${key} with matching SHA-256; continuing"
+      return 0
+    fi
     echo "ERROR: Refusing to overwrite existing artifact s3://${bucket}/${key}" >&2
+    echo "ERROR: Existing object SHA-256=${remote_sha:-<unknown>} local SHA-256=${local_sha}" >&2
     exit 1
   fi
 
-  if ! aws s3 cp "$local_path" "s3://${bucket}/${key}" --sse AES256; then
+  if ! aws s3 cp "$local_path" "s3://${bucket}/${key}" --sse AES256 --metadata "sha256=${local_sha}"; then
     echo "ERROR: Failed to upload s3://${bucket}/${key}" >&2
     aws sts get-caller-identity || true
     exit 1
@@ -711,13 +741,33 @@ generate_deployment_manifest() {
   bucket="$(environment_artifact_bucket)"
   prefix="$(environment_artifact_prefix "$CURRENT_COMMIT")"
 
+  local lambda_json="[]"
+  if [ -f "${SERVICE_DIR}/app/.serverless/lambda-artifacts.json" ]; then
+    lambda_json="$(LAMBDA_FILE="${SERVICE_DIR}/app/.serverless/lambda-artifacts.json" PREFIX="$prefix" node -e '
+      const fs = require("fs");
+      const data = JSON.parse(fs.readFileSync(process.env.LAMBDA_FILE, "utf8"));
+      const prefix = process.env.PREFIX;
+      const keys = (data.artifacts || []).map((a) => `${prefix}/app/${a.zipName}`);
+      process.stdout.write(JSON.stringify(keys));
+    ')"
+  fi
+
   cat >"$dest" <<EOF
 {
   "service": "${SERVICE_NAME}",
+  "pipelineServiceName": "${SERVICE_NAME}",
+  "applicationServiceName": "${APPLICATION_SERVICE_NAME}",
   "stage": "$STAGE",
   "currentCommit": "$CURRENT_COMMIT",
   "artifactBucket": "$bucket",
   "artifactPrefix": "$prefix",
+  "resourceNamePrefix": "${RESOURCE_NAME_PREFIX}",
+  "ssmPrefix": "${SSM_PREFIX}",
+  "awsRegion": "${AWS_REGION}",
+  "lambdaArtifacts": ${lambda_json},
+  "data": "${prefix}/data/packaged.yaml",
+  "infra": "${prefix}/infra/packaged.yaml",
+  "app": "${prefix}/app/packaged.yaml",
   "deployData": $DEPLOY_DATA,
   "deployInfra": $DEPLOY_INFRA,
   "deployApp": $DEPLOY_APP,
@@ -728,6 +778,8 @@ generate_deployment_manifest() {
 EOF
 
   echo "Wrote deployment manifest: $dest"
+  echo "  pipelineServiceName=$SERVICE_NAME"
+  echo "  applicationServiceName=$APPLICATION_SERVICE_NAME"
   echo "  currentCommit=$CURRENT_COMMIT"
   echo "  artifactBucket=$bucket"
   echo "  artifactPrefix=$prefix"
@@ -849,7 +901,7 @@ normalize_bool() {
   esac
 }
 
-export SERVICE_NAME STAGE AWS_REGION
+export SERVICE_NAME APPLICATION_SERVICE_NAME STAGE AWS_REGION
 export APP_STACK_NAME STACK_NAME="${STACK_NAME:-$APP_STACK_NAME}"
 export DATA_STACK_NAME INFRA_STACK_NAME DATA_TABLE_NAME DATA_LOGICAL_ID
 export SSM_PREFIX LAST_DEPLOYED_COMMIT_PARAM

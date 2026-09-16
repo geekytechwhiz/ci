@@ -1,14 +1,19 @@
 service: workflow-service-infra
 
-configValidationMode: warn
+configValidationMode: error
 
 frameworkVersion: '3.x'
 
 # Infrastructure-only. No Lambda, API Gateway, or application plugins.
 # Do not enable mvrx-resource-registry: it would publish SSM under a different path.
 
+plugins:
+  - ../ci/plugins/allow-nodejs22-runtime.js
+
 provider:
   name: aws
+  # Unused: this stack has no functions. Kept schema-valid and consistent with
+  # the application Node.js 22 runtime contract.
   runtime: nodejs22.x
   region: ${env:AWS_REGION, opt:region, 'us-east-1'}
   stage: ${opt:stage, 'dev'}

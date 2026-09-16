@@ -120,6 +120,7 @@ if BUILD_HOOK="$(resolve_service_build_hook)"; then
   DEPLOY_APP="$DEPLOY_APP" \
   CURRENT_COMMIT="$CURRENT_COMMIT" \
   SERVICE_NAME="$SERVICE_NAME" \
+  APPLICATION_SERVICE_NAME="${APPLICATION_SERVICE_NAME:-}" \
   STAGE="$STAGE" \
   AWS_REGION="$AWS_REGION" \
   ARTIFACT_BUCKET="$ARTIFACT_BUCKET" \
@@ -144,7 +145,42 @@ if [ "$need_publish" = "true" ]; then
     exit 1
   fi
   "$SCRIPT_DIR/publish-artifacts.sh"
+  echo "Artifact verification:"
   "$SCRIPT_DIR/verify-artifacts.sh"
+  echo "  PASS"
+
+  PREFIX="$(environment_artifact_prefix "$CURRENT_COMMIT")"
+  BUCKET="$(environment_artifact_bucket)"
+  LAMBDA_KEYS="[]"
+  if [ -f "${SERVICE_DIR}/app/.serverless/lambda-artifacts.json" ]; then
+    LAMBDA_KEYS="$(LAMBDA_FILE="${SERVICE_DIR}/app/.serverless/lambda-artifacts.json" PREFIX="$PREFIX" node -e '
+      const fs = require("fs");
+      const data = JSON.parse(fs.readFileSync(process.env.LAMBDA_FILE, "utf8"));
+      const prefix = process.env.PREFIX;
+      process.stdout.write(JSON.stringify((data.artifacts || []).map((a) => `${prefix}/app/${a.zipName}`)));
+    ')"
+  fi
+  cat > "${CODEBUILD_SRC_DIR:-.}/artifact-manifest.json" <<EOF
+{
+  "service": "${SERVICE_NAME}",
+  "pipelineServiceName": "${SERVICE_NAME}",
+  "applicationServiceName": "${APPLICATION_SERVICE_NAME}",
+  "stage": "${STAGE}",
+  "commit": "${CURRENT_COMMIT}",
+  "artifactBucket": "${BUCKET}",
+  "artifactPrefix": "${PREFIX}",
+  "resourceNamePrefix": "${RESOURCE_NAME_PREFIX}",
+  "ssmPrefix": "${SSM_PREFIX}",
+  "awsRegion": "${AWS_REGION}",
+  "data": "${PREFIX}/data/packaged.yaml",
+  "infra": "${PREFIX}/infra/packaged.yaml",
+  "app": "${PREFIX}/app/packaged.yaml",
+  "lambdaArtifacts": ${LAMBDA_KEYS},
+  "dataImportManifest": "${PREFIX}/data/import-manifest.json"
+}
+EOF
+  echo "Deployment manifest: PASS"
+  echo "Immutable artifact root: ${PREFIX}"
 fi
 
 # Re-write decision env with gated flags. The buildspec must source this file
@@ -162,5 +198,6 @@ echo "DEPLOY_INFRA=$DEPLOY_INFRA"
 echo "DEPLOY_APP=$DEPLOY_APP"
 echo "CURRENT_COMMIT=$CURRENT_COMMIT"
 echo "========================================"
-echo "BUILD STAGE COMPLETED"
+echo "Packaging: PASS"
+echo "BUILD SUCCESSFUL"
 echo "========================================"

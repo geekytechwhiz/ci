@@ -103,7 +103,7 @@ Not required before stack create:
 
 | Parameter | Example | Notes |
 |-----------|---------|--------|
-| `ServiceName` | `workflow-service` | Logical service name. Not a DynamoDB table name. |
+| `ServiceName` | `workflow-service` | Pipeline identity (CodePipeline, CodeBuild, artifact prefix `{ServiceName}/{commit}`). May differ from the Serverless application service name. |
 | `Stage` | `dev` | `dev` / `stg` / `prd` |
 | `GitHubConnectionArn` | CodeConnections ARN | Existing AVAILABLE connection |
 | `GitHubFullRepositoryId` | `org/repo` | |
@@ -117,13 +117,35 @@ Not required before stack create:
 |-----------|---------|--------|
 | `ResourceNamePrefix` | `nvdev-use1-mvx` | Propagated to CodeBuild as `RESOURCE_NAME_PREFIX`. Empty derives `{PlatformCode}{Stage}-{RegionShortCode}-{ProjectCode}`. |
 | `CiPath` | `workflow/ci` | Service packaging hooks |
-| `SsmPrefix` | `/nvdev-use1-mvx/workflow-service` | Empty derives `/{ResourceNamePrefix}/{ServiceName}` |
+| `SsmPrefix` | `/nvdev-use1-mvx/workflow-service` | Application SSM contract. Empty derives `/{ResourceNamePrefix}/{ServiceName}` from pipeline identity — set this explicitly when `ServiceName` is not the Serverless service name. |
 
 ### Optional / derived
 
 `PipelineName` empty → `{Stage}-{ServiceName}-pipeline`. `PlatformCode` default `nv`. `ProjectCode` default `mvx`. `RegionShortCode` empty → mapping for `AWS::Region`. Feature toggles default `true`.
 
 The Common stack must **not** be given individual workflow-service resource names (`…-db`, `…-events`, `…-bus`). The service build produces those from `RESOURCE_NAME_PREFIX` plus service suffixes.
+
+## Pipeline identity vs application identity
+
+```text
+Pipeline identity (SERVICE_NAME / ServiceName)
+  CodePipeline, CodeBuild projects, IAM role names
+  Artifact root: s3://$ARTIFACT_BUCKET/$SERVICE_NAME/$COMMIT/
+  Pipeline SSM: /$STAGE/$SERVICE_NAME/cicd/*
+
+Application identity (serverless.yml service: workflow-service)
+  Physical resource names: $RESOURCE_NAME_PREFIX-workflow-service-*
+  Runtime SSM: $SSM_PREFIX  (example /nvdev-use1-mvx/workflow-service)
+  Lambda environment SERVICE_NAME=workflow-service
+```
+
+A pipeline named `cloud-formation-testing` can deploy the `workflow-service` application. Keep `SsmPrefix` and `ResourceNamePrefix` on the application contract; do not let artifact prefixes rewrite DynamoDB/SQS/EventBridge names.
+
+## Runtime contract
+
+- CodeBuild: Node.js 22 (`aws/codebuild/standard:7.0`, `runtime-versions.nodejs: 22`)
+- Lambda: `nodejs22.x`
+- Serverless Framework: 3.40.0 (schema extended by `workflow/ci/plugins/allow-nodejs22-runtime.js`)
 
 ## RESOURCE_NAME_PREFIX propagation
 
