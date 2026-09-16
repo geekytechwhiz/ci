@@ -1,11 +1,11 @@
 service:
   name: workflow-service
-  root: apps/workflow
+  root: workflow
 
 source:
   repository: OfficialOrg/api-hub
   branch: main
-  ciPath: apps/workflow/ci
+  ciPath: workflow/ci
 
 deployment:
   data: true
@@ -16,11 +16,6 @@ data:
   enabled: true
   type: dynamodb
   logicalId: WorkflowTable
-  tableName: workflow-service-stg
-  ownershipTags:
-    Service: workflow-service
-    Purpose: primaryDataTable
-    ManagedBy: serverless
 
 features:
   dynamodb: true
@@ -29,30 +24,28 @@ features:
   apiGateway: true
 
 ssm:
-  prefix: /stg/workflow-service
   required:
     - TABLE_NAME
     - TABLE_ARN
     - STREAM_ARN
     - SQS_QUEUE_URL
     - SQS_QUEUE_ARN
+    - EVENT_BUS_NAME
+    - EVENT_BUS_ARN
 
 application:
   healthCheckPath: /health
-  apiBaseUrlParameter: /stg/workflow-service/api-base-url
   healthResponseContains: '"status": "healthy"'
-  buildProjectName: ""
 
 changeDetection:
   data:
-    - apps/workflow/data/**
+    - workflow/data/**
   infrastructure:
-    - apps/workflow/infra/**
+    - workflow/infra/**
   application:
-    - apps/workflow/src/**
-    - apps/workflow/serverless.yml
-    - apps/workflow/config/**
+    - workflow/src/**
+    - workflow/serverless.yml
+    - workflow/config/**
   ci:
-    - apps/workflow/ci/**
-    - apps/workflow/package.json
-    - apps/workflow/stg-buildspec.yml
+    - workflow/ci/**
+    - workflow/package.json

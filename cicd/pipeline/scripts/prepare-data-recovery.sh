@@ -145,7 +145,7 @@ fetch_immutable_data_artifact() {
     fail_stop "Cannot resolve immutable Data artifact URI for CURRENT_COMMIT=${CURRENT_COMMIT}."
   fi
 
-  dest="$(mktemp "${WORKDIR}/data-packaged.XXXXXX")"
+  dest="$(immutable_packaged_template_local_path data)"
   log "Fetching immutable Data artifact ${DATA_ARTIFACT_URI}"
   log "CURRENT_COMMIT=${CURRENT_COMMIT}. A local packaged.yaml is ignored."
   set +e
@@ -960,15 +960,7 @@ case "${STACK_EXISTS_STATUS}" in
   ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
     log "Removing failed CloudFormation stack record ${DATA_STACK_NAME} (${STACK_EXISTS_STATUS})."
     log "DeletionPolicy Retain keeps ${DATA_TABLE_NAME}. The table is not deleted or recreated."
-    aws cloudformation delete-stack \
-      --region "$AWS_REGION" \
-      --stack-name "$DATA_STACK_NAME"
-    if ! aws cloudformation wait stack-delete-complete \
-      --region "$AWS_REGION" \
-      --stack-name "$DATA_STACK_NAME"; then
-      print_cfn_failure_diagnostics "${DATA_STACK_NAME}"
-      fail_stop "Failed to delete the failed stack record ${DATA_STACK_NAME}. The DynamoDB table was not targeted for deletion."
-    fi
+    delete_failed_cfn_stack_record "$DATA_STACK_NAME" "$STACK_EXISTS_STATUS"
     STACK_EXISTS_STATUS=""
     ;;
 esac

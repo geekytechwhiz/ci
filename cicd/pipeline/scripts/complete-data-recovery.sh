@@ -127,7 +127,7 @@ fetch_immutable_data_artifact() {
     fail_stop "Cannot resolve immutable Data artifact URI for CURRENT_COMMIT=${CURRENT_COMMIT}."
   fi
 
-  dest="$(mktemp "${WORKDIR}/data-packaged.XXXXXX")"
+  dest="$(immutable_packaged_template_local_path data)"
   log "Fetching immutable full Data artifact ${DATA_ARTIFACT_URI}"
   log "CURRENT_COMMIT=${CURRENT_COMMIT}. A local packaged.yaml is ignored."
   set +e

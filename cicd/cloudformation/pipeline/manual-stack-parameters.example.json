@@ -1,0 +1,24 @@
+{
+  "Parameters": {
+    "ServiceName": "workflow-service",
+    "Stage": "dev",
+    "PipelineName": "dev-workflow-service-pipeline",
+    "CiPath": "workflow/ci",
+    "GitHubConnectionArn": "arn:aws:codeconnections:us-east-1:ACCOUNT_ID:connection/CONNECTION_ID",
+    "GitHubFullRepositoryId": "MyvitalRx/Cf-testing",
+    "GitHubBranch": "dev",
+    "DetectSourceChanges": "true",
+    "ArtifactBucketName": "EXISTING_CODEPIPELINE_ARTIFACT_BUCKET",
+    "ArtifactBucket": "EXISTING_DEPLOYMENT_ARTIFACT_BUCKET",
+    "ResourceNamePrefix": "nvdev-use1-mvx",
+    "PlatformCode": "nv",
+    "ProjectCode": "mvx",
+    "RegionShortCode": "use1",
+    "SsmPrefix": "/nvdev-use1-mvx/workflow-service",
+    "RequiredSsmParameters": "TABLE_NAME,TABLE_ARN,STREAM_ARN,SQS_QUEUE_URL,SQS_QUEUE_ARN,EVENT_BUS_NAME,EVENT_BUS_ARN",
+    "EnableData": "true",
+    "EnableInfra": "true",
+    "EnableApp": "true",
+    "CodeBuildImage": "aws/codebuild/standard:7.0"
+  }
+}

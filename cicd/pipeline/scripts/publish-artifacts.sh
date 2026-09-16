@@ -67,8 +67,8 @@ echo "Publish working directory SERVICE_DIR=$SERVICE_DIR"
 cd "$SERVICE_DIR"
 
 DATA_TEMPLATE="${DATA_PACKAGED_TEMPLATE:-data/packaged.yaml}"
-INFRA_TEMPLATE="${INFRA_PACKAGED_TEMPLATE:-infrastructure/packaged.yaml}"
-APP_TEMPLATE="${PACKAGED_TEMPLATE:-packaged.yaml}"
+INFRA_TEMPLATE="${INFRA_PACKAGED_TEMPLATE:-infra/packaged.yaml}"
+APP_TEMPLATE="${PACKAGED_TEMPLATE:-app/packaged.yaml}"
 MANIFEST="$(resolve_local_manifest)"
 
 need_data=false

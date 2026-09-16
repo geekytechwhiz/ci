@@ -1,4 +1,6 @@
 #!/bin/bash
+# Optional: pack cicd/pipeline and upload to s3://$ARTIFACT_BUCKET/cicd-framework/pipeline/latest/cicd-pipeline.tgz
+# Not required for POC when the GitHub source repository already contains cicd/pipeline.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

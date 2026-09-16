@@ -17,7 +17,7 @@ package: ${file(../infra/serverless/package.yml)}
 provider:
   name: aws
   runtime: nodejs22.x
-  region: us-east-1
+  region: ${env:AWS_REGION, opt:region, 'us-east-1'}
   stage: ${opt:stage, 'dev'}
   # Preserve existing CloudFormation stack identity (do not rename to *-app).
   stackName: ${self:provider.stage}-workflow-service
@@ -55,6 +55,7 @@ provider:
 
 custom:
   naming: ${file(./config/naming.yml)}
+  deploymentContext: ${file(./config/deployment-context.yml)}
   sharedSsmPaths: ${file(../infra/serverless/config/shared-ssm-paths.yml)}
   logRetentionByStage: ${file(../infra/serverless/config/log-retention-by-stage.yml)}
   app: ${file(./config/app-custom.yml)}

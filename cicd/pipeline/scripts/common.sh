@@ -15,7 +15,14 @@ DATA_STACK_NAME="${DATA_STACK_NAME:-${STAGE}-${SERVICE_NAME}-data}"
 INFRA_STACK_NAME="${INFRA_STACK_NAME:-${STAGE}-${SERVICE_NAME}-infra}"
 DATA_TABLE_NAME="${DATA_TABLE_NAME:-}"
 DATA_LOGICAL_ID="${DATA_LOGICAL_ID:-}"
-SSM_PREFIX="${SSM_PREFIX:-/${STAGE}/${SERVICE_NAME}}"
+RESOURCE_NAME_PREFIX="${RESOURCE_NAME_PREFIX:-}"
+if [ -z "${SSM_PREFIX:-}" ]; then
+  if [ -n "${RESOURCE_NAME_PREFIX}" ]; then
+    SSM_PREFIX="/${RESOURCE_NAME_PREFIX}/${SERVICE_NAME}"
+  else
+    SSM_PREFIX="/${STAGE}/${SERVICE_NAME}"
+  fi
+fi
 LAST_DEPLOYED_COMMIT_PARAM="${LAST_DEPLOYED_COMMIT_PARAM:-/${STAGE}/${SERVICE_NAME}/cicd/LAST_DEPLOYED_COMMIT}"
 
 # Ownership identity is filled from the service Data packaged template.
@@ -213,6 +220,48 @@ immutable_packaged_template_s3_uri() {
   printf 's3://%s/%s/%s/packaged.yaml' "$bucket" "$prefix" "$layer"
 }
 
+# Stable local path so Preflight and Deploy use the same downloaded bytes.
+immutable_packaged_template_local_path() {
+  local layer="$1"
+  local root
+
+  case "$layer" in
+    data|infra|app) ;;
+    *)
+      echo "ERROR: artifact layer must be data, infra, or app (got: ${layer:-unset})" >&2
+      return 1
+      ;;
+  esac
+
+  if [ -n "${CODEBUILD_SRC_DIR:-}" ]; then
+    root="${CODEBUILD_SRC_DIR}"
+  else
+    root="${TMPDIR:-/tmp}"
+  fi
+
+  if [ -n "${CURRENT_COMMIT:-}" ]; then
+    printf '%s' "${root}/.pipeline-immutable/${SERVICE_NAME}/${CURRENT_COMMIT}/${layer}/packaged.yaml"
+  else
+    printf '%s' "${root}/.pipeline-immutable/${SERVICE_NAME}/local/${layer}/packaged.yaml"
+  fi
+}
+
+sha256_file() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$file" | awk '{print $NF}'
+  elif command -v node >/dev/null 2>&1; then
+    SHA_FILE="$file" node -e 'const fs=require("fs"); const crypto=require("crypto"); process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.env.SHA_FILE)).digest("hex"));'
+  else
+    echo "ERROR: No sha256 tool available (sha256sum, shasum, openssl, or node)." >&2
+    return 1
+  fi
+}
+
 # Download the exact packaged template published by Build for this commit.
 # When CURRENT_COMMIT is set (pipeline), S3 is required — do not silently use a
 # local/BuildArtifact copy. Manual/emergency runs without CURRENT_COMMIT keep
@@ -248,6 +297,7 @@ fetch_immutable_packaged_template() {
   fi
 
   echo "Fetching immutable ${layer} artifact ${uri}"
+  mkdir -p "$(dirname "$dest")"
   if ! aws s3 cp "$uri" "$dest"; then
     echo "ERROR: Failed to download ${uri}" >&2
     echo "Build must publish ${SERVICE_NAME}/${CURRENT_COMMIT}/${layer}/packaged.yaml" >&2
@@ -307,12 +357,9 @@ if (hintLogical && resources[hintLogical] && resources[hintLogical].Type === 'AW
 } else if (hintLogical) {
   console.error('WARN: DATA_LOGICAL_ID=' + hintLogical + ' is not an AWS::DynamoDB::Table in the Data artifact; using the artifact table instead.');
 }
-if (!chosen && resources.WorkflowTable && resources.WorkflowTable.Type === 'AWS::DynamoDB::Table') {
-  chosen = { id: 'WorkflowTable', res: resources.WorkflowTable };
-}
 if (!chosen) {
   if (tables.length !== 1) {
-    console.error('ERROR: Data packaged template has ' + tables.length + ' DynamoDB tables and no WorkflowTable resource.');
+    console.error('ERROR: Data packaged template has ' + tables.length + ' DynamoDB tables; set DATA_LOGICAL_ID or provide exactly one table.');
     process.exit(1);
   }
   chosen = tables[0];
@@ -406,6 +453,56 @@ NODE
   if [ -n "${STAGE:-}" ] && [ "$tag_stage" != "$STAGE" ]; then
     echo "ERROR: Artifact tag Stage='${tag_stage}' does not match pipeline STAGE='${STAGE}'." >&2
     echo "ERROR: The generic pipeline will not override the service-generated Stage tag." >&2
+    return 1
+  fi
+
+  # Service-generated TableName is authoritative, but it must still comply with
+  # the environment naming prefix (RESOURCE_NAME_PREFIX, e.g. nvdev-use1-mvx).
+  # Do not rewrite the name; fail closed if it does not match.
+  if [ -z "${RESOURCE_NAME_PREFIX:-}" ]; then
+    if [ -n "${CURRENT_COMMIT:-}" ]; then
+      echo "ERROR: RESOURCE_NAME_PREFIX is required to validate the service-generated TableName." >&2
+      echo "ERROR: The pipeline must not invent or rewrite DynamoDB table names." >&2
+      return 1
+    fi
+  else
+    case "$table_name" in
+      "${RESOURCE_NAME_PREFIX}"*)
+        ;;
+      *)
+        echo "ERROR: Artifact TableName '${table_name}' does not start with RESOURCE_NAME_PREFIX='${RESOURCE_NAME_PREFIX}'." >&2
+        echo "ERROR: The generic pipeline will not rename the table to satisfy the prefix." >&2
+        return 1
+        ;;
+    esac
+  fi
+}
+
+# Remove a failed CloudFormation stack record so CREATE/IMPORT can retry.
+# DynamoDB DeletionPolicy Retain keeps any physical table; do not DeleteTable.
+delete_failed_cfn_stack_record() {
+  local stack="$1"
+  local status="$2"
+
+  case "$status" in
+    ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
+      ;;
+    *)
+      echo "ERROR: Refusing to delete stack ${stack} in status ${status:-unset}." >&2
+      return 1
+      ;;
+  esac
+
+  echo "Removing failed CloudFormation stack record ${stack} (${status})."
+  echo "DeletionPolicy Retain keeps existing DynamoDB tables. Tables are not deleted or recreated."
+  aws cloudformation delete-stack \
+    --region "$AWS_REGION" \
+    --stack-name "$stack"
+  if ! aws cloudformation wait stack-delete-complete \
+    --region "$AWS_REGION" \
+    --stack-name "$stack"; then
+    print_cfn_failure_diagnostics "$stack"
+    echo "ERROR: Failed to delete the failed stack record ${stack}. DynamoDB was not targeted for deletion." >&2
     return 1
   fi
 }
@@ -757,4 +854,5 @@ export APP_STACK_NAME STACK_NAME="${STACK_NAME:-$APP_STACK_NAME}"
 export DATA_STACK_NAME INFRA_STACK_NAME DATA_TABLE_NAME DATA_LOGICAL_ID
 export SSM_PREFIX LAST_DEPLOYED_COMMIT_PARAM
 export OWNERSHIP_TAG_SERVICE OWNERSHIP_TAG_STAGE OWNERSHIP_TAG_PURPOSE OWNERSHIP_TAG_MANAGED_BY
+export RESOURCE_NAME_PREFIX
 export SERVICE_ROOT SERVICE_DIR

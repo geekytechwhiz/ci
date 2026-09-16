@@ -8,8 +8,8 @@
 #
 # Env (optional):
 #   FRAMEWORK_PATH / FrameworkPath — local path to cicd/pipeline (or its scripts/)
-#   FRAMEWORK_BUNDLE_S3_URI        — s3://bucket/key to a tar.gz of the framework
-#   ARTIFACT_BUCKET                — used with FRAMEWORK_BUNDLE_KEY when URI unset
+#   FRAMEWORK_BUNDLE_S3_URI / ARTIFACT_BUCKET — optional fallback download when
+#     cicd/pipeline is not in the source tree. Not produced by deploy-pipeline.sh.
 #   FRAMEWORK_BUNDLE_KEY           — default: cicd-framework/pipeline/latest/cicd-pipeline.tgz
 #   CODEBUILD_SRC_DIR              — CodeBuild source root
 

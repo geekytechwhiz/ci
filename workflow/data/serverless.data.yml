@@ -11,7 +11,7 @@ frameworkVersion: '3.x'
 provider:
   name: aws
   runtime: nodejs22.x
-  region: us-east-1
+  region: ${env:AWS_REGION, opt:region, 'us-east-1'}
   stage: ${opt:stage, 'dev'}
   stackName: ${self:provider.stage}-workflow-service-data
   versionFunctions: false

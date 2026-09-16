@@ -38,20 +38,27 @@ cd "$SERVICE_DIR"
 case "$LAYER" in
   data)
     STACK="${DATA_STACK_NAME}"
-    TEMPLATE="${DATA_PACKAGED_TEMPLATE:-data/packaged.yaml}"
     TAG_STACK=data
     ;;
   infra)
     STACK="${INFRA_STACK_NAME}"
-    TEMPLATE="${INFRA_PACKAGED_TEMPLATE:-infra/packaged.yaml}"
     TAG_STACK=infrastructure
     ;;
   app)
     STACK="${APP_STACK_NAME}"
-    TEMPLATE="${PACKAGED_TEMPLATE:-app/packaged.yaml}"
     TAG_STACK=application
     ;;
 esac
+
+if [ -n "${CURRENT_COMMIT:-}" ]; then
+  TEMPLATE="$(immutable_packaged_template_local_path "$LAYER")"
+else
+  case "$LAYER" in
+    data) TEMPLATE="${DATA_PACKAGED_TEMPLATE:-data/packaged.yaml}" ;;
+    infra) TEMPLATE="${INFRA_PACKAGED_TEMPLATE:-infra/packaged.yaml}" ;;
+    app) TEMPLATE="${PACKAGED_TEMPLATE:-app/packaged.yaml}" ;;
+  esac
+fi
 
 echo "======================================="
 echo "CLOUDFORMATION DEPLOY (${LAYER})"
@@ -68,6 +75,28 @@ if [ ! -f "$TEMPLATE" ]; then
   echo "ERROR: Template not found: $TEMPLATE"
   echo "Pipeline requires s3://\$ARTIFACT_BUCKET/${SERVICE_NAME}/\$CURRENT_COMMIT/${LAYER}/packaged.yaml"
   exit 1
+fi
+
+if [ "$LAYER" = "data" ]; then
+  preflight_table="${DATA_TABLE_NAME:-}"
+  preflight_sha="${DATA_ARTIFACT_SHA256:-}"
+  deploy_sha="$(sha256_file "$TEMPLATE")"
+  echo "Deploying Data artifact sha256=${deploy_sha}"
+  if [ -n "$preflight_sha" ] && [ "$deploy_sha" != "$preflight_sha" ]; then
+    echo "ERROR: Data artifact sha256 mismatch between Preflight (${preflight_sha}) and Deploy (${deploy_sha})."
+    echo "ERROR: Both stages must use s3://\$ARTIFACT_BUCKET/${SERVICE_NAME}/${CURRENT_COMMIT:-}/data/packaged.yaml"
+    exit 1
+  fi
+  if ! apply_data_resource_identity_from_template "$TEMPLATE"; then
+    echo "ERROR: Refusing CloudFormation deploy; Data artifact TableName/tags are invalid."
+    exit 1
+  fi
+  echo "CloudFormation will deploy TableName=${DATA_TABLE_NAME} logicalId=${DATA_LOGICAL_ID} from ${TEMPLATE}"
+  if [ -n "$preflight_table" ] && [ "$DATA_TABLE_NAME" != "$preflight_table" ]; then
+    echo "ERROR: Preflight TableName='${preflight_table}' does not match deploy artifact TableName='${DATA_TABLE_NAME}'."
+    echo "ERROR: Refusing to deploy a different Data template than Data Preflight validated."
+    exit 1
+  fi
 fi
 
 # Optional app-layer safety: refuse deploy if live stack still owns EventBus/SQS

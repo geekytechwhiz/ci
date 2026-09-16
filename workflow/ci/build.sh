@@ -17,6 +17,8 @@ SERVICE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$SERVICE_DIR"
 
 STAGE="${STAGE:-dev}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
+export AWS_REGION
 case "$STAGE" in
   dev|stg|prd) ;;
   *)
@@ -76,6 +78,9 @@ mkdir -p app
 
 echo "SERVICE_DIR=$SERVICE_DIR"
 echo "STAGE=$STAGE"
+echo "AWS_REGION=$AWS_REGION"
+echo "RESOURCE_NAME_PREFIX=${RESOURCE_NAME_PREFIX:-<unset>}"
+echo "SSM_PREFIX=${SSM_PREFIX:-<unset>}"
 echo "DATA_STACK_NAME=$DATA_STACK_NAME"
 echo "INFRA_STACK_NAME=$INFRA_STACK_NAME"
 echo "APP_STACK_NAME=$APP_STACK_NAME"
@@ -293,6 +298,19 @@ else
 fi
 
 ###############################################################################
+# 3b. Generate naming contract from deployment context
+###############################################################################
+
+echo "[BUILD] Generating service naming from deployment context"
+chmod +x "$SCRIPT_DIR/generate-naming.sh"
+RESOURCE_NAME_PREFIX="${RESOURCE_NAME_PREFIX:-}" \
+SSM_PREFIX="${SSM_PREFIX:-}" \
+STAGE="$STAGE" \
+SERVICE_NAME="$SERVICE_NAME" \
+AWS_REGION="$AWS_REGION" \
+bash "$SCRIPT_DIR/generate-naming.sh"
+
+###############################################################################
 # 4. Package DATA
 ###############################################################################
 
@@ -317,16 +335,29 @@ if [ ! -s data/packaged.yaml ]; then
   exit 1
 fi
 
-echo "Validating Data artifact TableName against service naming.yml..."
-NAMING_FILE="$SERVICE_DIR/config/naming.yml" DATA_TEMPLATE="$SERVICE_DIR/data/packaged.yaml" node -e '
+echo "Validating Data artifact TableName against generated naming contract..."
+RESOURCE_NAME_PREFIX="${RESOURCE_NAME_PREFIX:-}" \
+NAMING_FILE="$SERVICE_DIR/config/naming.yml" \
+DATA_TEMPLATE="$SERVICE_DIR/data/packaged.yaml" \
+node -e '
   const fs = require("fs");
   const naming = fs.readFileSync(process.env.NAMING_FILE, "utf8");
-  const match = naming.match(/^[ \t]*tableName:[ \t]*(\S+)/m);
-  if (!match) {
-    console.error("ERROR: workflow/config/naming.yml is missing tableName");
+  const prefixMatch = naming.match(/^[ \t]*resourceNamePrefix:[ \t]*(\S+)/m);
+  const tableMatch = naming.match(/^[ \t]*tableName:[ \t]*(\S+)/m);
+  if (!prefixMatch || !tableMatch) {
+    console.error("ERROR: generated naming.yml is missing resourceNamePrefix or tableName");
     process.exit(1);
   }
-  const expected = match[1].replace(/^["\x27]|["\x27]$/g, "");
+  const prefix = prefixMatch[1].replace(/^["\x27]|["\x27]$/g, "");
+  const expected = tableMatch[1].replace(/^["\x27]|["\x27]$/g, "");
+  if (process.env.RESOURCE_NAME_PREFIX && prefix !== process.env.RESOURCE_NAME_PREFIX) {
+    console.error(`ERROR: naming.yml prefix "${prefix}" != RESOURCE_NAME_PREFIX "${process.env.RESOURCE_NAME_PREFIX}"`);
+    process.exit(1);
+  }
+  if (!expected.startsWith(prefix + "-")) {
+    console.error(`ERROR: tableName "${expected}" must start with "${prefix}-"`);
+    process.exit(1);
+  }
   const tpl = JSON.parse(fs.readFileSync(process.env.DATA_TEMPLATE, "utf8"));
   const tables = Object.entries(tpl.Resources || {}).filter(([, r]) => r && r.Type === "AWS::DynamoDB::Table");
   if (tables.length !== 1) {
@@ -336,7 +367,7 @@ NAMING_FILE="$SERVICE_DIR/config/naming.yml" DATA_TEMPLATE="$SERVICE_DIR/data/pa
   const [logicalId, resource] = tables[0];
   const actual = resource.Properties && resource.Properties.TableName;
   if (actual !== expected) {
-    console.error(`ERROR: Packaged ${logicalId} TableName is "${actual}", naming.yml tableName is "${expected}"`);
+    console.error(`ERROR: Packaged ${logicalId} TableName is "${actual}", expected "${expected}"`);
     process.exit(1);
   }
   console.log(`Data artifact TableName OK: ${logicalId} -> ${actual}`);

@@ -10,11 +10,7 @@ env:
     - CURRENT_COMMIT
   variables:
     STAGE: 'dev'
-    AWS_REGION: 'us-east-1'
-    STACK_NAME: 'dev-workflow-service'
-    DATA_STACK_NAME: 'dev-workflow-service-data'
-    INFRA_STACK_NAME: 'dev-workflow-service-infra'
-    DATA_LOGICAL_ID: 'WorkflowTable'
+    SERVICE_NAME: 'workflow-service'
     NODE_OPTIONS: '--max-old-space-size=2048'
 
 phases:

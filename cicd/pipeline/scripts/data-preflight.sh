@@ -51,6 +51,7 @@ DATA_ACTION=""
 DATA_STOP_REASON=""
 DATA_ARTIFACT_COMMIT=""
 DATA_ARTIFACT_URI=""
+DATA_ARTIFACT_SHA256=""
 PACKAGED_TEMPLATE_PATH=""
 
 log() {
@@ -77,6 +78,8 @@ write_preflight_env() {
     fi
     echo "DATA_ARTIFACT_COMMIT=${DATA_ARTIFACT_COMMIT}"
     echo "DATA_ARTIFACT_URI=${DATA_ARTIFACT_URI}"
+    echo "DATA_PACKAGED_TEMPLATE=${PACKAGED_TEMPLATE_PATH}"
+    echo "DATA_ARTIFACT_SHA256=${DATA_ARTIFACT_SHA256:-}"
     echo "DATA_TABLE_NAME=${DATA_TABLE_NAME}"
     echo "DATA_LOGICAL_ID=${DATA_LOGICAL_ID}"
     echo "OWNERSHIP_TAG_SERVICE=${OWNERSHIP_TAG_SERVICE}"
@@ -105,7 +108,16 @@ finish() {
       log "Deploy-Data may perform a CloudFormation update of the validated artifact."
       ;;
     CREATE)
-      log "No Data stack and no expected table. Deploy-Data may perform a CloudFormation create."
+      case "${DATA_STACK_STATUS:-}" in
+        ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
+          log "Failed stack ${DATA_STACK_NAME} is ${DATA_STACK_STATUS} and the expected table is missing."
+          log "Deploy-Data may delete the failed stack record only, then CREATE from the immutable artifact."
+          log "Existing physical DynamoDB tables will not be deleted or recreated."
+          ;;
+        *)
+          log "No Data stack and no expected table. Deploy-Data may perform a CloudFormation create."
+          ;;
+      esac
       ;;
     RECOVERY_REQUIRED)
       log "Normal CloudFormation CREATE/UPDATE is blocked."
@@ -196,9 +208,10 @@ resolve_packaged_data_template() {
       DATA_ARTIFACT_URI=""
       return 1
     fi
-    dest="$(mktemp "${TMPDIR:-/tmp}/data-packaged.XXXXXX.yaml")"
+    dest="$(immutable_packaged_template_local_path data)"
     log "Validating against immutable Data artifact ${DATA_ARTIFACT_URI}"
     log "CURRENT_COMMIT=${CURRENT_COMMIT}. A local packaged.yaml is ignored."
+    log "Pinned local artifact path: ${dest}"
     set +e
     fetch_immutable_packaged_template data "$dest"
     rc=$?
@@ -210,6 +223,8 @@ resolve_packaged_data_template() {
       return 1
     fi
     PACKAGED_TEMPLATE_PATH="$dest"
+    DATA_ARTIFACT_SHA256="$(sha256_file "$dest")"
+    log "Immutable Data artifact sha256=${DATA_ARTIFACT_SHA256}"
     return 0
   fi
 
@@ -221,6 +236,7 @@ resolve_packaged_data_template() {
   log "Pipeline Deploy-Data must set CURRENT_COMMIT and use the immutable S3 artifact."
   if [ -f "$dest" ]; then
     PACKAGED_TEMPLATE_PATH="$dest"
+    DATA_ARTIFACT_SHA256="$(sha256_file "$dest")"
   else
     PACKAGED_TEMPLATE_PATH=""
     log "Local Data template was not found at ${dest}."
@@ -297,7 +313,7 @@ dynamodb_error_is_not_found() {
   return 1
 }
 
-describe_workflow_table() {
+describe_data_table() {
   local output rc=0
   log "Checking DynamoDB resource"
   log "Expected table from packaged.yaml: ${DATA_TABLE_NAME}"
@@ -348,7 +364,7 @@ describe_workflow_table() {
 
 # When the Data stack exists, UPDATE is allowed only if CloudFormation still
 # manages logical ID ${DATA_LOGICAL_ID} and the physical resource is the expected table.
-validate_managed_workflow_table() {
+validate_managed_data_table() {
   local output rc=0
   local resource_type resource_status physical_id logical_id
 
@@ -433,7 +449,7 @@ validate_managed_workflow_table() {
     return 1
   fi
 
-  if ! describe_workflow_table; then
+  if ! describe_data_table; then
     return 1
   fi
 
@@ -696,8 +712,8 @@ try {
 }
 
 const resources = template.Resources || {};
-const workflowTable = resources[process.env.EXPECTED_LOGICAL_ID];
-if (!workflowTable || workflowTable.Type !== 'AWS::DynamoDB::Table') {
+const dataTableResource = resources[process.env.EXPECTED_LOGICAL_ID];
+if (!dataTableResource || dataTableResource.Type !== 'AWS::DynamoDB::Table') {
   process.stdout.write(JSON.stringify({
     state: 'INCOMPATIBLE',
     errors: [`Data template is missing AWS::DynamoDB::Table resource ${process.env.EXPECTED_LOGICAL_ID}`],
@@ -705,7 +721,7 @@ if (!workflowTable || workflowTable.Type !== 'AWS::DynamoDB::Table') {
   process.exit(0);
 }
 
-const expected = workflowTable.Properties || {};
+const expected = dataTableResource.Properties || {};
 
 function sortKeySchema(list) {
   return (list || []).map((k) => ({
@@ -877,7 +893,7 @@ fi
 
 if [ "${DATA_STACK_STATE}" = "EXISTS" ]; then
   if stack_is_usable "${DATA_STACK_STATUS}"; then
-    if validate_managed_workflow_table; then
+    if validate_managed_data_table; then
       DATA_ACTION="UPDATE"
       DATA_TABLE_OWNERSHIP="NOT_APPLICABLE"
       DATA_TABLE_CONFIGURATION="NOT_APPLICABLE"
@@ -923,16 +939,19 @@ if [ "${DATA_STACK_STATE}" = "EXISTS" ]; then
     log "Stack ${DATA_STACK_NAME} is ${DATA_STACK_STATUS} and cannot be updated."
     log "Checking whether the expected table still exists and must be imported."
     print_cfn_failure_diagnostics "${DATA_STACK_NAME}"
-    if ! describe_workflow_table; then
+    if ! describe_data_table; then
       DATA_ACTION="STOP"
       finish
       exit 0
     fi
     if [ "${DATA_TABLE_STATE}" = "NOT_FOUND" ]; then
-      DATA_ACTION="STOP"
-      DATA_STOP_REASON="STACK_UNSAFE"
-      log "ERROR: Stack name is occupied (${DATA_STACK_STATUS}) and table ${DATA_TABLE_NAME} is missing."
-      log "ERROR: Refusing CREATE (would race the failed stack) and refusing UPDATE."
+      DATA_ACTION="CREATE"
+      DATA_STOP_REASON=""
+      DATA_TABLE_OWNERSHIP="NOT_APPLICABLE"
+      DATA_TABLE_CONFIGURATION="NOT_APPLICABLE"
+      log "Stack name is occupied (${DATA_STACK_STATUS}) but table ${DATA_TABLE_NAME} is missing."
+      log "Deploy-Data may remove the failed stack record only, then CREATE from the same immutable artifact."
+      log "Refusing UPDATE against ${DATA_STACK_STATUS}. Physical DynamoDB tables will not be deleted."
       finish
       exit 0
     fi
@@ -966,7 +985,7 @@ fi
 
 # Stack is NOT_FOUND. Classify the expected DynamoDB table before any
 # ownership or configuration validation. A missing table is CREATE.
-if ! describe_workflow_table; then
+if ! describe_data_table; then
   DATA_ACTION="STOP"
   finish
   exit 0
