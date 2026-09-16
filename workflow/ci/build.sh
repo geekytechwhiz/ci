@@ -173,12 +173,17 @@ fi
 if [ -n "${CODEBUILD_BUILD_ID:-}" ] || [ ! -x "$SERVERLESS_BIN" ] || [ ! -d "$SERVICE_DIR/node_modules/serverless-esbuild" ]; then
   install_workflow_npm_deps
 else
-  echo "Using existing node_modules (serverless-esbuild already present)"
+  echo "[BUILD] No root build script found; skipping application compilation"
 fi
 
-if [ ! -x "$SERVERLESS_BIN" ]; then
-  echo "ERROR: serverless CLI missing at $SERVERLESS_BIN after npm install." >&2
-  echo "ERROR: Do not fall back to npx serverless — that CLI cannot load workflow plugins." >&2
+###############################################################################
+# Validate deployment source templates
+###############################################################################
+
+echo "[BUILD] Validating deployment templates"
+
+test -f "$DATA_TEMPLATE" || {
+  echo "ERROR: missing $DATA_TEMPLATE" >&2
   exit 1
 fi
 
@@ -191,7 +196,34 @@ echo "$SLS_VERSION_OUT"
 if ! echo "$SLS_VERSION_OUT" | grep -qE 'Framework Core: 3\.'; then
   echo "ERROR: Workflow packaging requires Serverless Framework 3.x (got incompatible CLI)." >&2
   exit 1
-fi
+}
+
+test -f "$APP_TEMPLATE" || {
+  echo "ERROR: missing $APP_TEMPLATE" >&2
+  exit 1
+}
+
+###############################################################################
+# Clean previous generated artifacts
+###############################################################################
+
+echo "[BUILD] Cleaning generated packaging output"
+
+rm -f "$DATA_DIR/packaged.yaml"
+rm -f "$INFRA_DIR/packaged.yaml"
+rm -f "$APP_DIR/packaged.yaml"
+
+rm -rf "$DATA_DIR/.serverless"
+rm -rf "$INFRA_DIR/.serverless"
+rm -rf "$APP_DIR/.serverless"
+
+###############################################################################
+# Package DATA
+###############################################################################
+
+echo "============================================================"
+echo "[PACKAGE] DATA"
+echo "============================================================"
 
 DATA_STACK_NAME="${DATA_STACK_NAME:-${STAGE}-workflow-service-data}"
 INFRA_STACK_NAME="${INFRA_STACK_NAME:-${STAGE}-workflow-service-infra}"
@@ -253,8 +285,9 @@ for (const res of Object.values(tpl.Resources || {})) {
   if (code && code.S3Key) keys.add(code.S3Key);
 }
 
-for (const key of [...keys].sort()) console.log(key);
-NODE
+cp \
+  "$DATA_DIR/.serverless/cloudformation-template-update-stack.json" \
+  "$DATA_DIR/packaged.yaml"
 
 if [ ! -s app/.serverless/s3keys.txt ]; then
   echo "WARN: No S3Key entries found in app template — Serverless may have used inline ZipFile or a different layout."
