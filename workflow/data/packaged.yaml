@@ -7,7 +7,7 @@
       "DeletionPolicy": "Retain",
       "UpdateReplacePolicy": "Retain",
       "Properties": {
-        "TableName": "workflow-service-dev",
+        "TableName": "workflow-dev-db",
         "BillingMode": "PAY_PER_REQUEST",
         "AttributeDefinitions": [
           {

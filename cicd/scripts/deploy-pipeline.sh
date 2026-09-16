@@ -85,13 +85,14 @@ const repo = svc.getVal("repository:") || "geekytechwhiz/ci";
 const branch = svc.getVal("branch:") || "main";
 const ciPath = svc.getVal("ciPath:") || "workflow/ci";
 const tableName = svc.getVal("tableName:") || process.argv[3] + "-" + process.argv[4];
+const logicalId = svc.getVal("logicalId:") || "WorkflowTable";
 
-console.log(`ServiceName=${process.argv[3]}`);
+ 
 console.log(`Stage=${process.argv[4]}`);
 console.log(`PipelineName=${process.argv[4]}-${process.argv[3]}-pipeline`);
 console.log(`CiPath=${ciPath}`);
 console.log(`DataTableName=${tableName}`);
-console.log(`DataLogicalId=WorkflowTable`);
+console.log(`DataLogicalId=${logicalId}`);
 console.log(`ArtifactBucketName=${pipeBucket}`);
 console.log(`ArtifactBucket=${deployBucket}`);
 console.log(`GitHubConnectionArn=${connArn}`);

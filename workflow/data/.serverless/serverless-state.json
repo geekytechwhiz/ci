@@ -11,7 +11,7 @@
       "stage": "dev",
       "stackName": "dev-workflow-service-data",
       "versionFunctions": false,
-      "deploymentBucket": "dev-mibc-workflow-service-bucket",
+      "deploymentBucket": "dev-workflow-service-bucket",
       "tags": {
         "Service": "workflow-service",
         "Stage": "dev",
@@ -19,7 +19,7 @@
         "Stack": "data"
       },
       "deploymentBucketObject": {
-        "name": "dev-mibc-workflow-service-bucket",
+        "name": "dev-workflow-service-bucket",
         "serverSideEncryption": "AES256"
       },
       "compiledCloudFormationTemplate": {
@@ -31,7 +31,7 @@
             "DeletionPolicy": "Retain",
             "UpdateReplacePolicy": "Retain",
             "Properties": {
-              "TableName": "workflow-service-dev",
+              "TableName": "workflow-dev-db",
               "BillingMode": "PAY_PER_REQUEST",
               "AttributeDefinitions": [
                 {
@@ -133,7 +133,7 @@
         },
         "Outputs": {
           "ServerlessDeploymentBucketName": {
-            "Value": "dev-mibc-workflow-service-bucket",
+            "Value": "dev-workflow-service-bucket",
             "Export": {
               "Name": "sls-workflow-service-data-dev-ServerlessDeploymentBucketName"
             }
@@ -142,7 +142,7 @@
       }
     },
     "custom": {
-      "tableName": "workflow-service-dev"
+      "tableName": "workflow-dev-db"
     },
     "pluginsData": {},
     "functions": {},
@@ -153,7 +153,7 @@
           "DeletionPolicy": "Retain",
           "UpdateReplacePolicy": "Retain",
           "Properties": {
-            "TableName": "workflow-service-dev",
+            "TableName": "workflow-dev-db",
             "BillingMode": "PAY_PER_REQUEST",
             "AttributeDefinitions": [
               {
@@ -275,7 +275,7 @@
     "isDashboardMonitoringPreconfigured": false
   },
   "package": {
-    "artifactDirectoryName": "serverless/workflow-service-data/dev/1789406465096-2026-09-14T17:21:05.096Z",
+    "artifactDirectoryName": "serverless/workflow-service-data/dev/1789546851150-2026-09-16T08:20:51.150Z",
     "artifact": ""
   }
 }

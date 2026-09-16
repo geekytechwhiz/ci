@@ -7,9 +7,9 @@
     "offline": "npx --no-install serverless offline --stage dev",
     "package": "npx --no-install serverless package",
     "package:data": "cd data && npx --no-install serverless package --config serverless.data.yml --package .serverless",
-    "package:infra": "cd infrastructure && npx --no-install serverless package --config serverless.infra.yml --package .serverless",
+    "package:infra": "cd infra && npx --no-install serverless package --config serverless.infra.yml --package .serverless",
     "print:data": "cd data && npx --no-install serverless print --config serverless.data.yml",
-    "print:infra": "cd infrastructure && npx --no-install serverless print --config serverless.infra.yml",
+    "print:infra": "cd infra && npx --no-install serverless print --config serverless.infra.yml",
     "test": "npx jest --config=jest.config.cjs",
     "test:coverage": "npx jest --config=jest.config.cjs --coverage",
     "test:watch": "npx jest --config=jest.config.cjs --watch"

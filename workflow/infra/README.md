@@ -41,7 +41,7 @@ The queue name `{stage}-workflow-service-events` is distinct from the existing p
 ## Layout
 
 ```text
-infrastructure/
+infra/
 ├── serverless.infra.yml    # stack {stage}-workflow-service-infra
 ├── resources/
 │   └── infra.yml           # SQS, EventBus, rule, SSM parameters
@@ -74,9 +74,9 @@ The application stack (not this directory) is a lightweight POC: one API Lambda 
 ## Package locally
 
 ```bash
-cd apps/workflow-service/infrastructure
+cd apps/workflow-service/infra
 npx serverless print --config serverless.infra.yml --stage dev
 npx serverless package --config serverless.infra.yml --stage dev --package .serverless
 ```
 
-The packaged template is copied to `infrastructure/packaged.yaml` by `ci/build.sh`.
+The packaged template is copied to `infra/packaged.yaml` by `ci/build.sh`.

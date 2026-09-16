@@ -48,7 +48,7 @@ changeDetection:
   data:
     - apps/workflow/data/**
   infrastructure:
-    - apps/workflow/infrastructure/**
+    - apps/workflow/infra/**
   application:
     - apps/workflow/src/**
     - apps/workflow/serverless.yml

@@ -64,6 +64,21 @@
     },
     "WorkflowEventsBus": {
       "Type": "AWS::Events::EventBus",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "custom bus for workflow-service events; named for app env contract; import existing physical bus x recreate",
+          "must": [
+            "keep Name stable; ARN is the app/SSM contract",
+            "if CFN state lost, IMPORT the existing bus; x Delete+Create or rename"
+          ],
+          "mutable": "must-never-change",
+          "mutability": {
+            "Name": "must-never-change"
+          }
+        }
+      },
       "Properties": {
         "Name": "workflow-service-bus-dev",
         "Tags": [
@@ -183,14 +198,6 @@
           "Service": "workflow-service",
           "Stage": "dev"
         }
-      }
-    }
-  },
-  "Outputs": {
-    "ServerlessDeploymentBucketName": {
-      "Value": "dev-mibc-workflow-service-bucket",
-      "Export": {
-        "Name": "sls-workflow-service-infra-dev-ServerlessDeploymentBucketName"
       }
     }
   }

@@ -663,41 +663,5 @@
         "Tags": {}
       }
     }
-  },
-  "Outputs": {
-    "ServerlessDeploymentBucketName": {
-      "Value": {
-        "Ref": "ServerlessDeploymentBucket"
-      },
-      "Export": {
-        "Name": "sls-workflow-service-dev-ServerlessDeploymentBucketName"
-      }
-    },
-    "ServiceEndpoint": {
-      "Description": "URL of the service endpoint",
-      "Value": {
-        "Fn::Join": [
-          "",
-          [
-            "https://",
-            {
-              "Ref": "ApiGatewayRestApi"
-            },
-            ".execute-api.",
-            {
-              "Ref": "AWS::Region"
-            },
-            ".",
-            {
-              "Ref": "AWS::URLSuffix"
-            },
-            "/dev"
-          ]
-        ]
-      },
-      "Export": {
-        "Name": "sls-workflow-service-dev-ServiceEndpoint"
-      }
-    }
   }
 }

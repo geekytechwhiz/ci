@@ -1,13 +1,13 @@
 Resources:
 # Logical ID must stay WorkflowTable. Recovery IMPORT identifies the retained
-  # table by this ID. Do not rename it.
+ 
   # Retain: deleting the Data stack must not delete production table data.
   WorkflowTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      TableName: workflow-service-${self:provider.stage}
+      TableName: workflow-dev-db
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: pk

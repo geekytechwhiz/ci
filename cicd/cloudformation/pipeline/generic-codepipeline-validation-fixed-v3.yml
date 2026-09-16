@@ -7,8 +7,7 @@
 # - Data / recovery / infra / app execution is driven by Build-exported variables.
 # - Artifact objects are commit-scoped under <ServiceName>/<commit-sha>/.
 # - Stack, SSM, IAM and resource names are derived from Stage + ServiceName.
-# - CodeBuild uses inline BuildSpecs that resolve a shared cicd framework
-#   (monorepo FrameworkPath or S3 ${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz).
+# - CodeBuild uses inline BuildSpecs and service-owned CI hooks
 #
 AWSTemplateFormatVersion: '2010-09-09'
 Metadata:
@@ -41,8 +40,8 @@ Parameters:
   PipelineName:
     Type: String
     Description: >
-      CodePipeline name. Required with no broken default — deploy script should pass
-      a derived value such as {Stage}-{ServiceName}-pipeline.
+      CodePipeline name. Use the convention {Stage}-{ServiceName}-pipeline.
+      The stack creates the matching Build project as {Stage}-{ServiceName}-build.
     AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$'
 
   CiPath:
@@ -50,27 +49,6 @@ Parameters:
     Description: Path to the service CI packaging hooks directory in the source repository.
     Default: ci
 
-  FrameworkPath:
-    Type: String
-    Description: Monorepo path to the cicd pipeline framework (scripts/). Prefer this when present in source.
-    Default: cicd/pipeline
-
-  FrameworkPrefix:
-    Type: String
-    Description: >
-      S3 prefix under ArtifactBucket for the packaged framework bundle (pipeline.tgz).
-      Deploy script should pin a content SHA (e.g. cicd-framework/<sha>).
-    Default: cicd-framework/latest
-
-  DataTableName:
-    Type: String
-    Default: ''
-    Description: Optional data table name. Leave empty to use ${ServiceName}-${Stage} at runtime.
-
-  DataLogicalId:
-    Type: String
-    Default: PrimaryTable
-    Description: CloudFormation logical ID of the primary DynamoDB table in the data stack.
 
   RequiredSsmParameters:
     Type: String
@@ -83,16 +61,7 @@ Parameters:
 
   ArtifactBucket:
     Type: String
-    Description: Centralized environment deployment artifact bucket (commit-scoped packages + cicd framework bundle). Required — no default.
-
-  BuildProjectName:
-    Type: String
-    Default: ''
-    Description: >
-      Existing package-only CodeBuild project name. Leave empty to create ${Stage}-${ServiceName}-build.
-      An external project must keep the existing exported-variable contract: env.exported-variables
-      DEPLOY_DATA, DEPLOY_INFRA, DEPLOY_APP, CURRENT_COMMIT, assigned in the CodeBuild shell
-      (not only a child process) so Namespace BuildVariables can feed VariableCheck.
+    Description: Centralized environment deployment artifact bucket (commit-scoped packages + cicd service deployment artifacts). Required — no default.
 
   GitHubConnectionArn:
     Type: String
@@ -164,17 +133,46 @@ Parameters:
     Description: Expected DynamoDB ownership tag Purpose value used by data preflight/recovery.
 
 Conditions:
-  HasDataTableName: !Not [!Equals [!Ref DataTableName, '']]
-  HasOwnershipTagService: !Not [!Equals [!Ref OwnershipTagService, '']]
-  HasExternalBuildProject: !Not [!Equals [!Ref BuildProjectName, '']]
-  CreateBuildProject: !Equals [!Ref BuildProjectName, '']
-  EnableDataLayer: !Equals [!Ref EnableData, 'true']
-  EnableInfraLayer: !Equals [!Ref EnableInfra, 'true']
-  EnableAppLayer: !Equals [!Ref EnableApp, 'true']
-  EnableDynamoDbFeature: !Equals [!Ref EnableDynamoDb, 'true']
-  EnableSqsFeature: !Equals [!Ref EnableSqs, 'true']
-  EnableLambdaFeature: !Equals [!Ref EnableLambda, 'true']
-  EnableApiGatewayFeature: !Equals [!Ref EnableApiGateway, 'true']
+  HasOwnershipTagService:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: OwnershipTagService
+          - ''
+
+  EnableDataLayer:
+    Fn::Equals:
+      - Ref: EnableData
+      - 'true'
+
+  EnableInfraLayer:
+    Fn::Equals:
+      - Ref: EnableInfra
+      - 'true'
+
+  EnableAppLayer:
+    Fn::Equals:
+      - Ref: EnableApp
+      - 'true'
+
+  EnableDynamoDbFeature:
+    Fn::Equals:
+      - Ref: EnableDynamoDb
+      - 'true'
+
+  EnableSqsFeature:
+    Fn::Equals:
+      - Ref: EnableSqs
+      - 'true'
+
+  EnableLambdaFeature:
+    Fn::Equals:
+      - Ref: EnableLambda
+      - 'true'
+
+  EnableApiGatewayFeature:
+    Fn::Equals:
+      - Ref: EnableApiGateway
+      - 'true'
 
 Resources:
   PipelineRole:
@@ -218,41 +216,13 @@ Resources:
                   - codebuild:BatchGetBuilds
                   - codebuild:StopBuild
                 Resource:
-                  - !If
-                    - CreateBuildProject
-                    - !GetAtt BuildProject.Arn
-                    - !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/${BuildProjectName}'
+                  - !GetAtt BuildProject.Arn
                   - !GetAtt DeployDataProject.Arn
                   - !GetAtt RecoverDataProject.Arn
                   - !GetAtt DeployInfraProject.Arn
                   - !GetAtt DeployAppProject.Arn
                   - !GetAtt ValidateSsmProject.Arn
                   - !GetAtt RecordDeploymentProject.Arn
-              - Sid: CloudFormationDeployActions
-                Effect: Allow
-                Action:
-                  - cloudformation:CreateStack
-                  - cloudformation:UpdateStack
-                  - cloudformation:DescribeStacks
-                  - cloudformation:DescribeStackEvents
-                  - cloudformation:DescribeStackResources
-                  - cloudformation:GetTemplate
-                  - cloudformation:GetTemplateSummary
-                  - cloudformation:ListStackResources
-                  - cloudformation:CreateChangeSet
-                  - cloudformation:DeleteChangeSet
-                  - cloudformation:DescribeChangeSet
-                  - cloudformation:ExecuteChangeSet
-                  - cloudformation:SetStackPolicy
-                  - cloudformation:ValidateTemplate
-                  - cloudformation:DeleteStack
-                Resource:
-                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}/*'
-                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-data/*'
-                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Stage}-${ServiceName}-infra/*'
-                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/${Stage}-${ServiceName}*'
-                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/${Stage}-${ServiceName}-data*'
-                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/${Stage}-${ServiceName}-infra*'
               - Sid: ValidateTemplateUnscoped
                 Effect: Allow
                 Action:
@@ -282,7 +252,6 @@ Resources:
 
   BuildRole:
     Type: AWS::IAM::Role
-    Condition: CreateBuildProject
     Properties:
       RoleName: !Sub '${Stage}-${ServiceName}-build-role'
       AssumeRolePolicyDocument:
@@ -311,6 +280,15 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Sid: WriteCurrentExecutionState
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_COMMIT'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_STATUS'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_STAGE'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_TIME'
               - Sid: ReadLastDeployedCommit
                 Effect: Allow
                 Action:
@@ -343,7 +321,6 @@ Resources:
                   - s3:PutObjectTagging
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
               - Sid: DeploymentArtifactList
                 Effect: Allow
                 Action:
@@ -420,116 +397,7 @@ Resources:
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
-                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*'
-              - !If
-                - EnableDynamoDbFeature
-                - Sid: DynamoDbData
-                  Effect: Allow
-                  Action:
-                    - dynamodb:CreateTable
-                    - dynamodb:UpdateTable
-                    - dynamodb:DescribeTable
-                    - dynamodb:DescribeTimeToLive
-                    - dynamodb:UpdateTimeToLive
-                    - dynamodb:ListTagsOfResource
-                    - dynamodb:TagResource
-                    - dynamodb:UntagResource
-                    - dynamodb:UpdateContinuousBackups
-                    - dynamodb:DescribeContinuousBackups
-                    - dynamodb:DescribeKinesisStreamingDestination
-                  Resource:
-                    - !If
-                      - HasDataTableName
-                      - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}'
-                      - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}'
-                    - !If
-                      - HasDataTableName
-                      - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}/index/*'
-                      - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}/index/*'
-                    - !If
-                      - HasDataTableName
-                      - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}/stream/*'
-                      - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}/stream/*'
-                - !Ref AWS::NoValue
-              - !If
-                - EnableDynamoDbFeature
-                - Sid: DynamoDbListStreams
-                  Effect: Allow
-                  Action: dynamodb:ListStreams
-                  Resource: '*'
-                - !Ref AWS::NoValue
-              - !If
-                - EnableSqsFeature
-                - Sid: Sqs
-                  Effect: Allow
-                  Action:
-                    - sqs:CreateQueue
-                    - sqs:DeleteQueue
-                    - sqs:GetQueueAttributes
-                    - sqs:GetQueueUrl
-                    - sqs:SetQueueAttributes
-                    - sqs:TagQueue
-                    - sqs:UntagQueue
-                    - sqs:ListQueueTags
-                  Resource: !Sub 'arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${Stage}-${ServiceName}-*'
-                - !Ref AWS::NoValue
-              - !If
-                - EnableLambdaFeature
-                - Sid: Lambda
-                  Effect: Allow
-                  Action:
-                    - lambda:CreateFunction
-                    - lambda:UpdateFunctionCode
-                    - lambda:UpdateFunctionConfiguration
-                    - lambda:DeleteFunction
-                    - lambda:GetFunction
-                    - lambda:GetFunctionConfiguration
-                    - lambda:ListTags
-                    - lambda:TagResource
-                    - lambda:UntagResource
-                    - lambda:AddPermission
-                    - lambda:RemovePermission
-                    - lambda:GetPolicy
-                    - lambda:PublishVersion
-                    - lambda:CreateEventSourceMapping
-                    - lambda:UpdateEventSourceMapping
-                    - lambda:DeleteEventSourceMapping
-                    - lambda:GetEventSourceMapping
-                    - lambda:ListEventSourceMappings
-                  Resource: '*'
-                - !Ref AWS::NoValue
-              - !If
-                - EnableLambdaFeature
-                - Sid: IamLambdaRoles
-                  Effect: Allow
-                  Action:
-                    - iam:CreateRole
-                    - iam:GetRole
-                    - iam:DeleteRole
-                    - iam:PassRole
-                    - iam:PutRolePolicy
-                    - iam:GetRolePolicy
-                    - iam:DeleteRolePolicy
-                    - iam:AttachRolePolicy
-                    - iam:DetachRolePolicy
-                    - iam:TagRole
-                    - iam:UntagRole
-                    - iam:ListRoleTags
-                    - iam:ListAttachedRolePolicies
-                    - iam:ListRolePolicies
-                    - iam:UpdateAssumeRolePolicy
-                  Resource:
-                    - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${Stage}-${ServiceName}*'
-                    - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ServiceName}*'
-                - !Ref AWS::NoValue
-              - !If
-                - EnableApiGatewayFeature
-                - Sid: ApiGateway
-                  Effect: Allow
-                  Action:
-                    - apigateway:*
-                  Resource: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}::*'
-                - !Ref AWS::NoValue
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
               - Sid: Logs
                 Effect: Allow
                 Action:
@@ -561,13 +429,140 @@ Resources:
                   - events:ListRules
                   - events:ListTargetsByRule
                   - events:ListEventBuses
-                  - events:ListEventBusTargets
-                  - events:ListEventBusRules
-                  - events:ListEventBusRuleNamesByTarget
-                  - events:ListEventBusRuleNamesByRule
-                  - events:ListEventBusRuleNamesByEventBus
-                  
                 Resource: '*'
+
+  CloudFormationDeployDynamoDbPolicy:
+    Type: AWS::IAM::Policy
+    Condition: EnableDynamoDbFeature
+    Properties:
+      PolicyName: cfn-deploy-dynamodb
+      Roles:
+        - !Ref CloudFormationDeployRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DynamoDbData
+            Effect: Allow
+            Action:
+              - dynamodb:CreateTable
+              - dynamodb:UpdateTable
+              - dynamodb:DescribeTable
+              - dynamodb:DescribeTimeToLive
+              - dynamodb:UpdateTimeToLive
+              - dynamodb:ListTagsOfResource
+              - dynamodb:TagResource
+              - dynamodb:UntagResource
+              - dynamodb:UpdateContinuousBackups
+              - dynamodb:DescribeContinuousBackups
+              - dynamodb:DescribeKinesisStreamingDestination
+              - dynamodb:DescribeStream
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*'
+              - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*/index/*'
+              - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*/stream/*'
+          - Sid: DynamoDbListStreams
+            Effect: Allow
+            Action: dynamodb:ListStreams
+            Resource: '*'
+
+  CloudFormationDeploySqsPolicy:
+    Type: AWS::IAM::Policy
+    Condition: EnableSqsFeature
+    Properties:
+      PolicyName: cfn-deploy-sqs
+      Roles:
+        - !Ref CloudFormationDeployRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Sqs
+            Effect: Allow
+            Action:
+              - sqs:CreateQueue
+              - sqs:DeleteQueue
+              - sqs:GetQueueAttributes
+              - sqs:GetQueueUrl
+              - sqs:SetQueueAttributes
+              - sqs:TagQueue
+              - sqs:UntagQueue
+              - sqs:ListQueueTags
+            Resource: !Sub 'arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${Stage}-${ServiceName}-*'
+
+  CloudFormationDeployLambdaPolicy:
+    Type: AWS::IAM::Policy
+    Condition: EnableLambdaFeature
+    Properties:
+      PolicyName: cfn-deploy-lambda
+      Roles:
+        - !Ref CloudFormationDeployRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Lambda
+            Effect: Allow
+            Action:
+              - lambda:CreateFunction
+              - lambda:UpdateFunctionCode
+              - lambda:UpdateFunctionConfiguration
+              - lambda:DeleteFunction
+              - lambda:GetFunction
+              - lambda:GetFunctionConfiguration
+              - lambda:ListTags
+              - lambda:TagResource
+              - lambda:UntagResource
+              - lambda:AddPermission
+              - lambda:RemovePermission
+              - lambda:GetPolicy
+              - lambda:PublishVersion
+              - lambda:CreateEventSourceMapping
+              - lambda:UpdateEventSourceMapping
+              - lambda:DeleteEventSourceMapping
+              - lambda:GetEventSourceMapping
+              - lambda:ListEventSourceMappings
+              - lambda:CreateAlias
+              - lambda:UpdateAlias
+              - lambda:DeleteAlias
+              - lambda:GetAlias
+              - lambda:ListAliases
+            Resource: '*'
+          - Sid: IamLambdaRoles
+            Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:GetRole
+              - iam:DeleteRole
+              - iam:PassRole
+              - iam:PutRolePolicy
+              - iam:GetRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:TagRole
+              - iam:UntagRole
+              - iam:ListRoleTags
+              - iam:ListAttachedRolePolicies
+              - iam:ListRolePolicies
+              - iam:UpdateAssumeRolePolicy
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${Stage}-${ServiceName}*'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ServiceName}*'
+
+  CloudFormationDeployApiGatewayPolicy:
+    Type: AWS::IAM::Policy
+    Condition: EnableApiGatewayFeature
+    Properties:
+      PolicyName: cfn-deploy-apigateway
+      Roles:
+        - !Ref CloudFormationDeployRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ApiGateway
+            Effect: Allow
+            Action:
+              - apigateway:*
+            Resource: '*'
+
 
   CloudFormationRecoverDataRole:
     Type: AWS::IAM::Role
@@ -613,18 +608,9 @@ Resources:
                   - dynamodb:UpdateTimeToLive
                   - dynamodb:UpdateContinuousBackups
                 Resource:
-                  - !If
-                    - HasDataTableName
-                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}'
-                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}'
-                  - !If
-                    - HasDataTableName
-                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}/index/*'
-                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}/index/*'
-                  - !If
-                    - HasDataTableName
-                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}/stream/*'
-                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}/stream/*'
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*'
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*/index/*'
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*/stream/*'
               - Sid: ListStreamsForImport
                 Effect: Allow
                 Action: dynamodb:ListStreams
@@ -742,17 +728,14 @@ Resources:
                   - dynamodb:DescribeContinuousBackups
                   - dynamodb:DescribeTimeToLive
                   - dynamodb:ListTagsOfResource
-                Resource: !If
-                  - HasDataTableName
-                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}'
-                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}'
+                Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*'
               - Sid: ReadDataSsmForRecoveryValidation
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
-              - Sid: ReadFrameworkAndArtifacts
+              - Sid: ReadServiceArtifacts
                 Effect: Allow
                 Action:
                   - s3:GetObject
@@ -760,7 +743,6 @@ Resources:
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
               - Sid: ListArtifactBuckets
                 Effect: Allow
                 Action:
@@ -862,7 +844,6 @@ Resources:
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
               - Sid: ListArtifactBuckets
                 Effect: Allow
                 Action:
@@ -956,7 +937,6 @@ Resources:
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
               - Sid: ListArtifactBuckets
                 Effect: Allow
                 Action:
@@ -1094,18 +1074,9 @@ Resources:
                   - dynamodb:DescribeKinesisStreamingDestination
                   - dynamodb:ListTagsOfResource
                 Resource:
-                  - !If
-                    - HasDataTableName
-                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}'
-                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}'
-                  - !If
-                    - HasDataTableName
-                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}/index/*'
-                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}/index/*'
-                  - !If
-                    - HasDataTableName
-                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataTableName}/stream/*'
-                    - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}/stream/*'
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*'
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*/index/*'
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*/stream/*'
               - Sid: ReadDataSsmAfterImport
                 Effect: Allow
                 Action:
@@ -1122,7 +1093,6 @@ Resources:
                   - s3:GetObjectVersion
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*/data/packaged.yaml'
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
               - Sid: ReadPipelineInputArtifacts
                 Effect: Allow
                 Action:
@@ -1206,7 +1176,6 @@ Resources:
                   - s3:GetObjectVersion
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
               - Effect: Allow
                 Action:
                   - s3:ListBucket
@@ -1244,17 +1213,49 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
-              - Sid: WriteCicdLastDeployedCommit
+              - Sid: VerifyDeployedStacks
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:DescribeChangeSet
+                Resource: '*'
+              - Sid: WriteDeploymentEvidence
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/DEPLOYMENT_EVIDENCE'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/DEPLOYMENT_VERIFICATION'
+              - Sid: WriteCurrentExecutionState
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_COMMIT'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_STATUS'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_STAGE'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_TIME'
+              - Sid: WriteCicdLastDeployedState
                 Effect: Allow
                 Action: ssm:PutParameter
-                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
-              - Effect: Allow
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_ARTIFACT'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/LAST_DEPLOYMENT_STATUS'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/LAST_DEPLOYMENT_TIME'
+              - Sid: ReadPipelineArtifactStore
+                Effect: Allow
                 Action:
                   - s3:GetObject
                   - s3:GetObjectVersion
-                Resource:
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${FrameworkPrefix}/*'
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*'
+              - Sid: ReadDeploymentArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ServiceName}/*'
               - Effect: Allow
                 Action:
                   - s3:ListBucket
@@ -1266,10 +1267,9 @@ Resources:
 
   BuildProject:
     Type: AWS::CodeBuild::Project
-    Condition: CreateBuildProject
     Properties:
       Name: !Sub '${Stage}-${ServiceName}-build'
-      Description: Package service artifacts, detect deployment changes, publish immutable commit-scoped packages, export DEPLOY_* flags.
+      Description: Primary package/build project. CloudFormation creates it automatically as ${Stage}-${ServiceName}-build.
       ServiceRole: !GetAtt BuildRole.Arn
       TimeoutInMinutes: 60
       # CODEPIPELINE is required so the Build action can write OutputArtifacts.BuildArtifact
@@ -1284,6 +1284,7 @@ Resources:
         Type: CODEPIPELINE
         BuildSpec: !Sub |
           version: 0.2
+
           env:
             shell: bash
             exported-variables:
@@ -1291,63 +1292,178 @@ Resources:
               - DEPLOY_INFRA
               - DEPLOY_APP
               - CURRENT_COMMIT
+
           phases:
-            install:
-              commands:
-                - |
-                  set -euo pipefail
-                  if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
-                  else
-                    mkdir -p /tmp/cicd-framework
-                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
-                  fi
-                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
                 - |
                   set -euo pipefail
-                  bash "${!CICD_FRAMEWORK_DIR}/scripts/run-build.sh"
-                  source "${!CICD_FRAMEWORK_DIR}/scripts/promote-exported-variables.sh" \
-                    "${!CODEBUILD_SRC_DIR}/deployment-decision.env" \
-                    DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
+                  echo "========== SOURCE DEBUG =========="
+                  echo "CODEBUILD_SOURCE_VERSION=${!CODEBUILD_SOURCE_VERSION:-<EMPTY>}"
+                  echo "CODEBUILD_RESOLVED_SOURCE_VERSION=${!CODEBUILD_RESOLVED_SOURCE_VERSION:-<EMPTY>}"
+                  echo "CODEBUILD_SOURCE_REPO_URL=${!CODEBUILD_SOURCE_REPO_URL:-<EMPTY>}"
+                  echo "CODEBUILD_INITIATOR=${!CODEBUILD_INITIATOR:-<EMPTY>}"
+                  echo "CODEBUILD_BUILD_ID=${!CODEBUILD_BUILD_ID:-<EMPTY>}"
+                  echo "=================================="
+                  export CURRENT_COMMIT="${!CODEBUILD_RESOLVED_SOURCE_VERSION:-}"
+
+                  test -n "${!CURRENT_COMMIT}" || {
+                    echo 'ERROR: source commit is empty' >&2
+                    exit 1
+                  }
+
+                  echo "[BUILD] service=${!SERVICE_NAME} stage=${!STAGE} commit=${!CURRENT_COMMIT}"
+
+                  NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+                  aws ssm put-parameter \
+                    --name "${!CURRENT_EXECUTION_COMMIT_PARAM}" \
+                    --type String \
+                    --value "${!CURRENT_COMMIT}" \
+                    --overwrite
+
+                  aws ssm put-parameter \
+                    --name "${!CURRENT_EXECUTION_STAGE_PARAM}" \
+                    --type String \
+                    --value "Build" \
+                    --overwrite
+
+                  aws ssm put-parameter \
+                    --name "${!CURRENT_EXECUTION_STATUS_PARAM}" \
+                    --type String \
+                    --value "IN_PROGRESS" \
+                    --overwrite
+
+                  aws ssm put-parameter \
+                    --name "${!CURRENT_EXECUTION_TIME_PARAM}" \
+                    --type String \
+                    --value "$NOW" \
+                    --overwrite
+
+                  # Service-owned packaging hook.
+                  # The generic pipeline has no CI/CD framework dependency.
+                  if [ -f "$CI_PATH/build.sh" ]; then
+                    chmod +x "$CI_PATH/build.sh"
+                    "$CI_PATH/build.sh"
+                  fi
+
+                  # Standard immutable artifact contract.
+                  for f in data infra app; do
+                    case "$f" in
+                      data)
+                        enabled="${!ENABLE_DATA}"
+                        ;;
+                      infra)
+                        enabled="${!ENABLE_INFRA}"
+                        ;;
+                      app)
+                        enabled="${!ENABLE_APP}"
+                        ;;
+                    esac
+
+                    if [ "${!enabled}" = "true" ]; then
+                      test -f "${!CODEBUILD_SRC_DIR}/${!f}/packaged.yaml" || {
+                        echo "ERROR: missing ${!f}/packaged.yaml" >&2
+                        exit 1
+                      }
+                    fi
+                  done
+
+                  PREFIX="${!SERVICE_NAME}/${!CURRENT_COMMIT}"
+
+                  for f in data infra app; do
+                    if [ -f "${!CODEBUILD_SRC_DIR}/${!f}/packaged.yaml" ]; then
+                      aws s3 cp \
+                        "${!CODEBUILD_SRC_DIR}/${!f}/packaged.yaml" \
+                        "s3://${!ARTIFACT_BUCKET}/${!PREFIX}/${!f}/packaged.yaml" \
+                        --metadata "commit=${!CURRENT_COMMIT},service=${!SERVICE_NAME}"
+                    fi
+                  done
+
+                  # Optional service-owned import manifest for pre-existing resources.
+                  if [ -f "${!CODEBUILD_SRC_DIR}/data/import-manifest.json" ]; then
+                    aws s3 cp \
+                      "${!CODEBUILD_SRC_DIR}/data/import-manifest.json" \
+                      "s3://${!ARTIFACT_BUCKET}/${!PREFIX}/data/import-manifest.json" \
+                      --metadata "commit=${!CURRENT_COMMIT},service=${!SERVICE_NAME}"
+                  fi
+
+                  export DEPLOY_DATA="$ENABLE_DATA"
+                  export DEPLOY_INFRA="$ENABLE_INFRA"
+                  export DEPLOY_APP="$ENABLE_APP"
+
+                  printf \
+                    'DEPLOY_DATA=%s\nDEPLOY_INFRA=%s\nDEPLOY_APP=%s\nCURRENT_COMMIT=%s\n' \
+                    "$DEPLOY_DATA" \
+                    "$DEPLOY_INFRA" \
+                    "$DEPLOY_APP" \
+                    "$CURRENT_COMMIT" \
+                    > deployment-decision.env
+
+                  cat > artifact-manifest.json <<EOF
+                  {
+                    "service": "${!SERVICE_NAME}",
+                    "stage": "${!STAGE}",
+                    "commit": "${!CURRENT_COMMIT}",
+                    "artifactBucket": "${!ARTIFACT_BUCKET}",
+                    "artifactPrefix": "${!PREFIX}/",
+                    "data": "${!PREFIX}/data/packaged.yaml",
+                    "infra": "${!PREFIX}/infra/packaged.yaml",
+                    "app": "${!PREFIX}/app/packaged.yaml",
+                    "dataImportManifest": "${!PREFIX}/data/import-manifest.json"
+                  }
+                  EOF
+
+                  printf \
+                    'CURRENT_COMMIT=%s\nARTIFACT_PREFIX=s3://%s/%s/\n' \
+                    "$CURRENT_COMMIT" \
+                    "$ARTIFACT_BUCKET" \
+                    "$PREFIX" \
+                    > codepipeline-artifact.txt
+
             post_build:
               commands:
                 - |
-                  set -euo pipefail
-                  if [ "${!CODEBUILD_BUILD_SUCCEEDING}" != "1" ]; then
-                    echo "Build phase failed; not promoting CodePipeline variables."
-                  else
-                    source "${!CICD_FRAMEWORK_DIR}/scripts/promote-exported-variables.sh" \
-                      "${!CODEBUILD_SRC_DIR}/deployment-decision.env" \
-                      DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
+                  if [ "${CODEBUILD_BUILD_SUCCEEDING}" != "1" ]; then
+                    echo "BUILD phase failed"
+                    exit 1
                   fi
-                  # CodePipeline OutputArtifacts.BuildArtifact requires a buildspec artifacts
-                  # payload. Without it CodeBuild succeeds but never writes the S3 object,
-                  # and Deploy-Data DOWNLOAD_SOURCE fails with NoSuchKey.
-                  printf 'CURRENT_COMMIT=%s\n' "${!CURRENT_COMMIT:-unknown}" > "${!CODEBUILD_SRC_DIR}/codepipeline-artifact.txt"
-                  if [ ! -f "${!CODEBUILD_SRC_DIR}/deployment-decision.env" ]; then
-                    printf '# deployment-decision.env was not produced\n' > "${!CODEBUILD_SRC_DIR}/deployment-decision.env"
-                  fi
-                  if [ -n "${!CICD_FRAMEWORK_DIR:-}" ] && [ ! -d "${!CODEBUILD_SRC_DIR}/${FrameworkPath}/scripts" ] && [ -d "${!CICD_FRAMEWORK_DIR}/scripts" ]; then
-                    mkdir -p "${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    cp -R "${!CICD_FRAMEWORK_DIR}/." "${!CODEBUILD_SRC_DIR}/${FrameworkPath}/"
-                  fi
-                  if [ ! -d "${!CODEBUILD_SRC_DIR}/${FrameworkPath}" ]; then
-                    mkdir -p "${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    printf 'placeholder\n' > "${!CODEBUILD_SRC_DIR}/${FrameworkPath}/.codepipeline-placeholder"
-                  fi
+
+                  echo "[POST_BUILD] Build completed successfully"
+
+                  test -f deployment-decision.env || {
+                    echo "ERROR: deployment-decision.env was not generated" >&2
+                    exit 1
+                  }
+
+                  test -f artifact-manifest.json || {
+                    echo "ERROR: artifact-manifest.json was not generated" >&2
+                    exit 1
+                  }
+
+                  test -f codepipeline-artifact.txt || {
+                    echo "ERROR: codepipeline-artifact.txt was not generated" >&2
+                    exit 1
+                  }
+
+                  echo "[POST_BUILD] Deployment decision:"
+                  cat deployment-decision.env
+
+                  echo "[POST_BUILD] Artifact manifest:"
+                  cat artifact-manifest.json
+
+                  echo "[POST_BUILD] CodePipeline artifact:"
+                  cat codepipeline-artifact.txt
+
+                  echo "[POST_BUILD] Build artifacts validated successfully"
+
           artifacts:
             files:
               - codepipeline-artifact.txt
               - deployment-decision.env
-              - '${FrameworkPath}/**/*'
+              - artifact-manifest.json
             discard-paths: no
+
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_MEDIUM
@@ -1366,15 +1482,21 @@ Resources:
           - Name: ARTIFACT_BUCKET
             Type: PLAINTEXT
             Value: !Ref ArtifactBucket
+          - Name: CURRENT_EXECUTION_COMMIT_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_COMMIT'
+          - Name: CURRENT_EXECUTION_STATUS_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_STATUS'
+          - Name: CURRENT_EXECUTION_STAGE_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_STAGE'
+          - Name: CURRENT_EXECUTION_TIME_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_TIME'
           - Name: CI_PATH
             Type: PLAINTEXT
             Value: !Ref CiPath
-          - Name: FRAMEWORK_PATH
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPath
-          - Name: FRAMEWORK_PREFIX
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPrefix
           - Name: SSM_PREFIX
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}'
@@ -1384,12 +1506,6 @@ Resources:
           - Name: REQUIRED_SSM_PARAMETERS
             Type: PLAINTEXT
             Value: !Ref RequiredSsmParameters
-          - Name: DATA_LOGICAL_ID
-            Type: PLAINTEXT
-            Value: !Ref DataLogicalId
-          - Name: DATA_TABLE_NAME
-            Type: PLAINTEXT
-            Value: !Ref DataTableName
           - Name: OWNERSHIP_TAG_SERVICE
             Type: PLAINTEXT
             Value: !If
@@ -1441,50 +1557,97 @@ Resources:
               - RECOVERY_STAGE
               - CURRENT_COMMIT
           phases:
-            install:
+            build:
               commands:
                 - |
                   set -euo pipefail
-                  if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
+                  : "${!CURRENT_COMMIT:?CURRENT_COMMIT must be supplied by BuildVariables}"
+                  TEMPLATE_KEY="${!SERVICE_NAME}/${!CURRENT_COMMIT}/data/packaged.yaml"
+                  TEMPLATE_URL="https://s3.${!AWS_REGION}.amazonaws.com/${!ARTIFACT_BUCKET}/${!TEMPLATE_KEY}"
+                  aws s3api head-object --bucket "${!ARTIFACT_BUCKET}" --key "${!TEMPLATE_KEY}" >/dev/null
+                  aws cloudformation validate-template --template-url "${!TEMPLATE_URL}" >/dev/null
+                  export DATA_ACTION=CREATE
+                  export DATA_REASON="new data stack"
+                  export RECOVERY_REQUIRED=false
+                  export RECOVERY_CHANGE_SET_NAME=""
+                  export RECOVERY_STACK_NAME="${!DATA_STACK_NAME}"
+                  export RECOVERY_TABLE_NAME=""
+                  export RECOVERY_STAGE="${!STAGE}"
+
+                  if aws cloudformation describe-stacks --stack-name "${!DATA_STACK_NAME}" >/dev/null 2>&1; then
+                    export DATA_ACTION=UPDATE
+                    export DATA_REASON="data stack exists"
+                    CHANGE_SET_TYPE=UPDATE
                   else
-                    mkdir -p /tmp/cicd-framework
-                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
+                    # A service-owned import manifest is required when a pre-existing
+                    # resource must be adopted without deletion/recreation.
+                    IMPORT_KEY="${!SERVICE_NAME}/${!CURRENT_COMMIT}/data/import-manifest.json"
+                    if aws s3api head-object --bucket "${!ARTIFACT_BUCKET}" --key "${!IMPORT_KEY}" >/dev/null 2>&1; then
+                      export DATA_ACTION=IMPORT
+                      export DATA_REASON="pre-existing resources require CloudFormation import"
+                      export RECOVERY_REQUIRED=true
+                      export RECOVERY_CHANGE_SET_NAME="import-${!CURRENT_COMMIT:0:12}-${!CODEBUILD_BUILD_NUMBER}"
+                      export RECOVERY_TABLE_NAME="service-owned-import-manifest"
+                      aws s3 cp "s3://${!ARTIFACT_BUCKET}/${!IMPORT_KEY}" /tmp/import-manifest.json
+                      if ! aws cloudformation describe-stacks --stack-name "${!DATA_STACK_NAME}" >/dev/null 2>&1; then
+                        cat > /tmp/empty-stack.yaml <<'EOF'
+                        AWSTemplateFormatVersion: '2010-09-09'
+                        Resources: {}
+                        EOF
+                        aws cloudformation create-stack --stack-name "${!DATA_STACK_NAME}" --template-body file:///tmp/empty-stack.yaml --role-arn "${!CFN_DEPLOY_ROLE_ARN}"
+                        aws cloudformation wait stack-create-complete --stack-name "${!DATA_STACK_NAME}"
+                      fi
+                      # DeployDataRole explicitly denies CloudFormation IMPORT. Assume the
+                      # narrowly-scoped RecoverDataRole for the IMPORT change-set preparation.
+                      read AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN < <(aws sts assume-role \
+                        --role-arn "${!RECOVER_DATA_ROLE_ARN}" \
+                        --role-session-name "data-import-${!CODEBUILD_BUILD_NUMBER}" \
+                        --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
+                        --output text)
+                      export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+                      aws cloudformation create-change-set \
+                        --stack-name "${!DATA_STACK_NAME}" \
+                        --change-set-name "${!RECOVERY_CHANGE_SET_NAME}" \
+                        --change-set-type IMPORT \
+                        --template-url "${!TEMPLATE_URL}" \
+                        --resources-to-import file:///tmp/import-manifest.json \
+                        --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM AUTO_EXPAND \
+                        --role-arn "${!CFN_RECOVER_ROLE_ARN}"
+                      aws cloudformation wait change-set-create-complete --stack-name "${!DATA_STACK_NAME}" --change-set-name "${!RECOVERY_CHANGE_SET_NAME}"
+                    else
+                      CHANGE_SET_TYPE=CREATE
+                    fi
                   fi
-                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
-            build:
-              commands:
-                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-deploy-data.sh"
+
+                  if [ "${!RECOVERY_REQUIRED}" != true ]; then
+                    CHANGE_SET_NAME="pipeline-data-${!CURRENT_COMMIT:0:12}-${!CODEBUILD_BUILD_NUMBER}"
+                    aws cloudformation create-change-set \
+                      --stack-name "${!DATA_STACK_NAME}" \
+                      --change-set-name "${!CHANGE_SET_NAME}" \
+                      --change-set-type "${!CHANGE_SET_TYPE}" \
+                      --template-url "${!TEMPLATE_URL}" \
+                      --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM AUTO_EXPAND \
+                      --role-arn "${!CFN_DEPLOY_ROLE_ARN}"
+                    aws cloudformation wait change-set-create-complete --stack-name "${!DATA_STACK_NAME}" --change-set-name "${!CHANGE_SET_NAME}" || { aws cloudformation describe-change-set --stack-name "${!DATA_STACK_NAME}" --change-set-name "${!CHANGE_SET_NAME}" || true; exit 1; }
+                    aws cloudformation execute-change-set --stack-name "${!DATA_STACK_NAME}" --change-set-name "${!CHANGE_SET_NAME}"
+                    if [ "${!CHANGE_SET_TYPE}" = CREATE ]; then aws cloudformation wait stack-create-complete --stack-name "${!DATA_STACK_NAME}"; else aws cloudformation wait stack-update-complete --stack-name "${!DATA_STACK_NAME}"; fi
+                    echo "[DEPLOYMENT-STATUS] DATA_DEPLOYED commit=${!CURRENT_COMMIT} stack=${!DATA_STACK_NAME} template=${!TEMPLATE_URL}"
+                  else
+                    echo "[DEPLOYMENT-STATUS] DATA_IMPORT_PENDING commit=${!CURRENT_COMMIT} stack=${!DATA_STACK_NAME} changeSet=${!RECOVERY_CHANGE_SET_NAME}"
+                  fi
+                  printf 'CURRENT_COMMIT=%s\nDATA_ACTION=%s\nRECOVERY_REQUIRED=%s\nRECOVERY_CHANGE_SET_NAME=%s\nRECOVERY_STACK_NAME=%s\nRECOVERY_TABLE_NAME=%s\nRECOVERY_STAGE=%s\n' \
+                    "${!CURRENT_COMMIT}" "${!DATA_ACTION}" "${!RECOVERY_REQUIRED}" "${!RECOVERY_CHANGE_SET_NAME}" "${!RECOVERY_STACK_NAME}" "${!RECOVERY_TABLE_NAME}" "${!RECOVERY_STAGE}" > deployment-data-variables.env
             post_build:
               commands:
                 - |
-                  set -euo pipefail
-                  mkdir -p "${!CODEBUILD_SRC_DIR}/.pipeline-data-preflight"
-                  printf 'CURRENT_COMMIT=%s\n' "${!CURRENT_COMMIT:-}" > "${!CODEBUILD_SRC_DIR}/.pipeline-data-preflight/data-preflight-artifact.txt"
-                  for f in data-deployment-variables.env deployment-data-preflight.env deployment-data-recovery.env; do
-                    if [ -f "${!CODEBUILD_SRC_DIR}/$f" ]; then
-                      cp "${!CODEBUILD_SRC_DIR}/$f" "${!CODEBUILD_SRC_DIR}/.pipeline-data-preflight/"
-                    elif [ -f "$f" ]; then
-                      cp "$f" "${!CODEBUILD_SRC_DIR}/.pipeline-data-preflight/"
-                    fi
-                  done
-                  if [ "${!CODEBUILD_BUILD_SUCCEEDING}" != "1" ]; then
-                    echo "Build phase failed; not promoting CodePipeline variables."
-                  else
-                    source "${!CICD_FRAMEWORK_DIR}/scripts/promote-exported-variables.sh" \
-                      "${!CODEBUILD_SRC_DIR}/data-deployment-variables.env" \
-                      DATA_ACTION RECOVERY_REQUIRED CURRENT_COMMIT \
-                      RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE
-                  fi
+                  mkdir -p .pipeline-data-preflight
+                  cp deployment-data-variables.env .pipeline-data-preflight/
+                  printf 'CURRENT_COMMIT=%s\n' "${!CURRENT_COMMIT}" > .pipeline-data-preflight/data-preflight-artifact.txt
           artifacts:
             files:
-              - '.pipeline-data-preflight/**/*'
+              - .pipeline-data-preflight/**/*
             discard-paths: yes
+
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -1506,12 +1669,6 @@ Resources:
           - Name: CI_PATH
             Type: PLAINTEXT
             Value: !Ref CiPath
-          - Name: FRAMEWORK_PATH
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPath
-          - Name: FRAMEWORK_PREFIX
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPrefix
           - Name: SSM_PREFIX
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}'
@@ -1521,12 +1678,6 @@ Resources:
           - Name: REQUIRED_SSM_PARAMETERS
             Type: PLAINTEXT
             Value: !Ref RequiredSsmParameters
-          - Name: DATA_LOGICAL_ID
-            Type: PLAINTEXT
-            Value: !Ref DataLogicalId
-          - Name: DATA_TABLE_NAME
-            Type: PLAINTEXT
-            Value: !Ref DataTableName
           - Name: OWNERSHIP_TAG_SERVICE
             Type: PLAINTEXT
             Value: !If
@@ -1592,36 +1743,27 @@ Resources:
               - DATA_ACTION
               - CURRENT_COMMIT
           phases:
-            install:
-              commands:
-                - |
-                  set -euo pipefail
-                  if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
-                  else
-                    mkdir -p /tmp/cicd-framework
-                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
-                  fi
-                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
             build:
               commands:
-                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-recover-data.sh"
-            post_build:
-              commands:
                 - |
                   set -euo pipefail
-                  if [ "${!CODEBUILD_BUILD_SUCCEEDING}" != "1" ]; then
-                    echo "Build phase failed; not promoting CodePipeline variables."
-                  else
-                    source "${!CICD_FRAMEWORK_DIR}/scripts/promote-exported-variables.sh" \
-                      "${!CODEBUILD_SRC_DIR}/deployment-data-recovery-result.env" \
-                      RECOVERY_SUCCESS DATA_ACTION CURRENT_COMMIT
-                  fi
+                  : "${!CURRENT_COMMIT:?CURRENT_COMMIT must be supplied by BuildVariables}"
+                  : "${!RECOVERY_CHANGE_SET_NAME:?RECOVERY_CHANGE_SET_NAME must be supplied}"
+                  TEMPLATE_KEY="${!SERVICE_NAME}/${!CURRENT_COMMIT}/data/packaged.yaml"
+                  TEMPLATE_URL="https://s3.${!AWS_REGION}.amazonaws.com/${!ARTIFACT_BUCKET}/${!TEMPLATE_KEY}"
+                  IMPORT_KEY="${!SERVICE_NAME}/${!CURRENT_COMMIT}/data/import-manifest.json"
+                  aws s3 cp "s3://${!ARTIFACT_BUCKET}/${!IMPORT_KEY}" /tmp/import-manifest.json
+                  aws s3api head-object --bucket "${!ARTIFACT_BUCKET}" --key "${!TEMPLATE_KEY}" >/dev/null
+                  aws cloudformation execute-change-set --stack-name "${!DATA_STACK_NAME}" --change-set-name "${!RECOVERY_CHANGE_SET_NAME}"
+                  aws cloudformation wait stack-import-complete --stack-name "${!DATA_STACK_NAME}"
+                  export RECOVERY_SUCCESS=true
+                  export DATA_ACTION=IMPORT
+                  echo "[DEPLOYMENT-STATUS] DATA_IMPORTED commit=${!CURRENT_COMMIT} stack=${!DATA_STACK_NAME} template=${!TEMPLATE_URL}"
+                  printf 'RECOVERY_SUCCESS=true\nDATA_ACTION=IMPORT\nCURRENT_COMMIT=%s\n' "${!CURRENT_COMMIT}" > deployment-data-recovery-result.env
+            post_build:
+              commands:
+                - test "$CODEBUILD_BUILD_SUCCEEDING" = "1"
+
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -1643,12 +1785,6 @@ Resources:
           - Name: CI_PATH
             Type: PLAINTEXT
             Value: !Ref CiPath
-          - Name: FRAMEWORK_PATH
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPath
-          - Name: FRAMEWORK_PREFIX
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPrefix
           - Name: SSM_PREFIX
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}'
@@ -1658,12 +1794,6 @@ Resources:
           - Name: REQUIRED_SSM_PARAMETERS
             Type: PLAINTEXT
             Value: !Ref RequiredSsmParameters
-          - Name: DATA_LOGICAL_ID
-            Type: PLAINTEXT
-            Value: !Ref DataLogicalId
-          - Name: DATA_TABLE_NAME
-            Type: PLAINTEXT
-            Value: !Ref DataTableName
           - Name: OWNERSHIP_TAG_SERVICE
             Type: PLAINTEXT
             Value: !If
@@ -1719,28 +1849,40 @@ Resources:
         Type: CODEPIPELINE
         BuildSpec: !Sub |
           version: 0.2
-          env:
-            shell: bash
           phases:
-            install:
+            build:
               commands:
                 - |
                   set -euo pipefail
-                  if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
-                  else
-                    mkdir -p /tmp/cicd-framework
-                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
+                  : "${!CURRENT_COMMIT:?CURRENT_COMMIT must be supplied by BuildVariables}"
+                  : "${!ARTIFACT_BUCKET:?ARTIFACT_BUCKET must be supplied}"
+                  : "${!SERVICE_NAME:?SERVICE_NAME must be supplied}"
+                  TEMPLATE_KEY="${!SERVICE_NAME}/${!CURRENT_COMMIT}/infra/packaged.yaml"
+                  TEMPLATE_URL="https://s3.${!AWS_REGION}.amazonaws.com/${!ARTIFACT_BUCKET}/${!TEMPLATE_KEY}"
+                  aws s3api head-object --bucket "${!ARTIFACT_BUCKET}" --key "${!TEMPLATE_KEY}" >/dev/null
+                  aws cloudformation validate-template --template-url "${!TEMPLATE_URL}" >/dev/null
+                  echo "[ARTIFACT] immutable template=${!TEMPLATE_URL}"
+                  CHANGE_SET_NAME="pipeline-${!CURRENT_COMMIT:0:12}-${!CODEBUILD_BUILD_NUMBER}"
+                  if aws cloudformation describe-stacks --stack-name "${!STACK_NAME}" >/dev/null 2>&1; then CHANGE_SET_TYPE=UPDATE; else CHANGE_SET_TYPE=CREATE; fi
+                  set +e
+                  aws cloudformation create-change-set \
+                    --stack-name "${!STACK_NAME}" \
+                    --change-set-name "${!CHANGE_SET_NAME}" \
+                    --change-set-type "${!CHANGE_SET_TYPE}" \
+                    --template-url "${!TEMPLATE_URL}" \
+                    --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM AUTO_EXPAND \
+                    --role-arn "${!CFN_DEPLOY_ROLE_ARN}"
+                  rc=$?
+                  set -e
+                  if [ "${!rc}" != 0 ]; then
+                    echo "ERROR: CloudFormation change set creation failed for ${!STACK_NAME}" >&2
+                    exit "${!rc}"
                   fi
-                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
-            build:
-              commands:
-                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-deploy-infra.sh"
+                  aws cloudformation wait change-set-create-complete --stack-name "${!STACK_NAME}" --change-set-name "${!CHANGE_SET_NAME}" || { aws cloudformation describe-change-set --stack-name "${!STACK_NAME}" --change-set-name "${!CHANGE_SET_NAME}" || true; exit 1; }
+                  aws cloudformation execute-change-set --stack-name "${!STACK_NAME}" --change-set-name "${!CHANGE_SET_NAME}"
+                  if [ "${!CHANGE_SET_TYPE}" = CREATE ]; then aws cloudformation wait stack-create-complete --stack-name "${!STACK_NAME}"; else aws cloudformation wait stack-update-complete --stack-name "${!STACK_NAME}"; fi
+                  echo "[DEPLOYMENT-STATUS] INFRA_DEPLOYED commit=${!CURRENT_COMMIT} stack=${!STACK_NAME} template=${!TEMPLATE_URL}"
+
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -1762,12 +1904,6 @@ Resources:
           - Name: CI_PATH
             Type: PLAINTEXT
             Value: !Ref CiPath
-          - Name: FRAMEWORK_PATH
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPath
-          - Name: FRAMEWORK_PREFIX
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPrefix
           - Name: SSM_PREFIX
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}'
@@ -1777,12 +1913,6 @@ Resources:
           - Name: REQUIRED_SSM_PARAMETERS
             Type: PLAINTEXT
             Value: !Ref RequiredSsmParameters
-          - Name: DATA_LOGICAL_ID
-            Type: PLAINTEXT
-            Value: !Ref DataLogicalId
-          - Name: DATA_TABLE_NAME
-            Type: PLAINTEXT
-            Value: !Ref DataTableName
           - Name: OWNERSHIP_TAG_SERVICE
             Type: PLAINTEXT
             Value: !If
@@ -1801,6 +1931,9 @@ Resources:
           - Name: ENABLE_APP
             Type: PLAINTEXT
             Value: !Ref EnableApp
+          - Name: STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}-infra'
           - Name: INFRA_STACK_NAME
             Type: PLAINTEXT
             Value: !Sub '${Stage}-${ServiceName}-infra'
@@ -1826,28 +1959,40 @@ Resources:
         Type: CODEPIPELINE
         BuildSpec: !Sub |
           version: 0.2
-          env:
-            shell: bash
           phases:
-            install:
+            build:
               commands:
                 - |
                   set -euo pipefail
-                  if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
-                  else
-                    mkdir -p /tmp/cicd-framework
-                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
+                  : "${!CURRENT_COMMIT:?CURRENT_COMMIT must be supplied by BuildVariables}"
+                  : "${!ARTIFACT_BUCKET:?ARTIFACT_BUCKET must be supplied}"
+                  : "${!SERVICE_NAME:?SERVICE_NAME must be supplied}"
+                  TEMPLATE_KEY="${!SERVICE_NAME}/${!CURRENT_COMMIT}/app/packaged.yaml"
+                  TEMPLATE_URL="https://s3.${!AWS_REGION}.amazonaws.com/${!ARTIFACT_BUCKET}/${!TEMPLATE_KEY}"
+                  aws s3api head-object --bucket "${!ARTIFACT_BUCKET}" --key "${!TEMPLATE_KEY}" >/dev/null
+                  aws cloudformation validate-template --template-url "${!TEMPLATE_URL}" >/dev/null
+                  echo "[ARTIFACT] immutable template=${!TEMPLATE_URL}"
+                  CHANGE_SET_NAME="pipeline-${!CURRENT_COMMIT:0:12}-${!CODEBUILD_BUILD_NUMBER}"
+                  if aws cloudformation describe-stacks --stack-name "${!STACK_NAME}" >/dev/null 2>&1; then CHANGE_SET_TYPE=UPDATE; else CHANGE_SET_TYPE=CREATE; fi
+                  set +e
+                  aws cloudformation create-change-set \
+                    --stack-name "${!STACK_NAME}" \
+                    --change-set-name "${!CHANGE_SET_NAME}" \
+                    --change-set-type "${!CHANGE_SET_TYPE}" \
+                    --template-url "${!TEMPLATE_URL}" \
+                    --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM AUTO_EXPAND \
+                    --role-arn "${!CFN_DEPLOY_ROLE_ARN}"
+                  rc=$?
+                  set -e
+                  if [ "${!rc}" != 0 ]; then
+                    echo "ERROR: CloudFormation change set creation failed for ${!STACK_NAME}" >&2
+                    exit "${!rc}"
                   fi
-                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
-            build:
-              commands:
-                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-deploy-app.sh"
+                  aws cloudformation wait change-set-create-complete --stack-name "${!STACK_NAME}" --change-set-name "${!CHANGE_SET_NAME}" || { aws cloudformation describe-change-set --stack-name "${!STACK_NAME}" --change-set-name "${!CHANGE_SET_NAME}" || true; exit 1; }
+                  aws cloudformation execute-change-set --stack-name "${!STACK_NAME}" --change-set-name "${!CHANGE_SET_NAME}"
+                  if [ "${!CHANGE_SET_TYPE}" = CREATE ]; then aws cloudformation wait stack-create-complete --stack-name "${!STACK_NAME}"; else aws cloudformation wait stack-update-complete --stack-name "${!STACK_NAME}"; fi
+                  echo "[DEPLOYMENT-STATUS] APP_DEPLOYED commit=${!CURRENT_COMMIT} stack=${!STACK_NAME} template=${!TEMPLATE_URL}"
+
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -1869,12 +2014,6 @@ Resources:
           - Name: CI_PATH
             Type: PLAINTEXT
             Value: !Ref CiPath
-          - Name: FRAMEWORK_PATH
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPath
-          - Name: FRAMEWORK_PREFIX
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPrefix
           - Name: SSM_PREFIX
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}'
@@ -1884,12 +2023,6 @@ Resources:
           - Name: REQUIRED_SSM_PARAMETERS
             Type: PLAINTEXT
             Value: !Ref RequiredSsmParameters
-          - Name: DATA_LOGICAL_ID
-            Type: PLAINTEXT
-            Value: !Ref DataLogicalId
-          - Name: DATA_TABLE_NAME
-            Type: PLAINTEXT
-            Value: !Ref DataTableName
           - Name: OWNERSHIP_TAG_SERVICE
             Type: PLAINTEXT
             Value: !If
@@ -1939,28 +2072,24 @@ Resources:
         Type: CODEPIPELINE
         BuildSpec: !Sub |
           version: 0.2
-          env:
-            shell: bash
           phases:
-            install:
+            build:
               commands:
                 - |
                   set -euo pipefail
-                  if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
-                  else
-                    mkdir -p /tmp/cicd-framework
-                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
+                  if [ -z "${!REQUIRED_SSM_PARAMETERS:-}" ]; then
+                    echo "[SSM] No required parameters configured; validation passed."
+                    exit 0
                   fi
-                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
-            build:
-              commands:
-                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-validate-ssm.sh"
+                  IFS=',' read -ra NAMES <<< "${!REQUIRED_SSM_PARAMETERS}"
+                  for leaf in "${!NAMES[@]}"; do
+                    leaf="$(echo "$leaf" | xargs)"
+                    [ -z "$leaf" ] && continue
+                    name="${!SSM_PREFIX}/$leaf"
+                    aws ssm get-parameter --name "$name" >/dev/null
+                    echo "[SSM] present: $name"
+                  done
+
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -1982,12 +2111,6 @@ Resources:
           - Name: CI_PATH
             Type: PLAINTEXT
             Value: !Ref CiPath
-          - Name: FRAMEWORK_PATH
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPath
-          - Name: FRAMEWORK_PREFIX
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPrefix
           - Name: SSM_PREFIX
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}'
@@ -1997,12 +2120,6 @@ Resources:
           - Name: REQUIRED_SSM_PARAMETERS
             Type: PLAINTEXT
             Value: !Ref RequiredSsmParameters
-          - Name: DATA_LOGICAL_ID
-            Type: PLAINTEXT
-            Value: !Ref DataLogicalId
-          - Name: DATA_TABLE_NAME
-            Type: PLAINTEXT
-            Value: !Ref DataTableName
           - Name: OWNERSHIP_TAG_SERVICE
             Type: PLAINTEXT
             Value: !If
@@ -2049,28 +2166,132 @@ Resources:
         Type: CODEPIPELINE
         BuildSpec: !Sub |
           version: 0.2
-          env:
-            shell: bash
           phases:
-            install:
+            build:
               commands:
                 - |
                   set -euo pipefail
-                  if [ -d "${FrameworkPath}" ]; then
-                    export CICD_FRAMEWORK_DIR="${!CODEBUILD_SRC_DIR}/${FrameworkPath}"
-                    echo "Using monorepo framework at ${!CICD_FRAMEWORK_DIR}"
-                  else
-                    mkdir -p /tmp/cicd-framework
-                    aws s3 cp "s3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz" /tmp/pipeline.tgz
-                    tar -xzf /tmp/pipeline.tgz -C /tmp/cicd-framework
-                    export CICD_FRAMEWORK_DIR=/tmp/cicd-framework
-                    echo "Downloaded framework to ${!CICD_FRAMEWORK_DIR}"
-                  fi
-                  test -d "${!CICD_FRAMEWORK_DIR}/scripts"
-                  chmod +x "${!CICD_FRAMEWORK_DIR}/scripts/"*.sh || true
-            build:
-              commands:
-                - bash "${!CICD_FRAMEWORK_DIR}/scripts/run-record-deployment.sh"
+
+                  on_failure() {
+                    rc=$?
+                    aws ssm put-parameter --name "${!CURRENT_EXECUTION_STATUS_PARAM}" --type String --value "FAILED" --overwrite || true
+                    aws ssm put-parameter --name "${!CURRENT_EXECUTION_STAGE_PARAM}" --type String --value "Record-Deployment" --overwrite || true
+                    exit "$rc"
+                  }
+                  trap on_failure EXIT
+
+                  : "${!CURRENT_COMMIT:?CURRENT_COMMIT must be supplied by BuildVariables}"
+                  PREFIX="${!SERVICE_NAME}/${!CURRENT_COMMIT}"
+                  for f in data infra app; do
+                    case "$f" in
+                      data) enabled="${!ENABLE_DATA}" ;;
+                      infra) enabled="${!ENABLE_INFRA}" ;;
+                      app) enabled="${!ENABLE_APP}" ;;
+                    esac
+                    if [ "${!enabled}" = "true" ]; then
+                      key="${!PREFIX}/$f/packaged.yaml"
+                      aws s3api head-object --bucket "${!ARTIFACT_BUCKET}" --key "$key" >/dev/null
+                      echo "[RECORD] verified artifact: s3://${!ARTIFACT_BUCKET}/$key"
+                    fi
+                  done
+                  NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  ARTIFACT_URI="s3://${!ARTIFACT_BUCKET}/${!PREFIX}/"
+
+                  # CURRENT_EXECUTION_* describes this pipeline execution.
+                  # LAST_* is only advanced after the complete deployment path succeeds.
+                  aws ssm put-parameter --name "${!CURRENT_EXECUTION_COMMIT_PARAM}" --type String --value "${!CURRENT_COMMIT}" --overwrite
+                  aws ssm put-parameter --name "${!CURRENT_EXECUTION_STAGE_PARAM}" --type String --value "Record-Deployment" --overwrite
+                  aws ssm put-parameter --name "${!CURRENT_EXECUTION_STATUS_PARAM}" --type String --value "SUCCESS" --overwrite
+                  aws ssm put-parameter --name "${!CURRENT_EXECUTION_TIME_PARAM}" --type String --value "$NOW" --overwrite
+
+                  # ------------------------------------------------------------
+                  # Deployment verification gate
+                  # ------------------------------------------------------------
+                  # LAST_* is advanced only after every enabled target stack is verified.
+                  EVIDENCE_FILE="$(mktemp)"
+                  VERIFICATION_FILE="$(mktemp)"
+                  printf '%s\n' '{}' > "${!EVIDENCE_FILE}"
+
+                  verify_stack() {
+                    stack_var="$1"
+                    artifact_uri="$2"
+                    enabled_var="$3"
+
+                    if [ "$enabled_var" != "true" ]; then
+                      return 0
+                    fi
+
+                    case "$stack_var" in
+                      DATA_STACK_NAME) stack_name="$DATA_STACK_NAME" ;;
+                      INFRA_STACK_NAME) stack_name="$INFRA_STACK_NAME" ;;
+                      APP_STACK_NAME) stack_name="$APP_STACK_NAME" ;;
+                      *) echo "[VERIFY] unknown stack variable: $stack_var" >&2; return 1 ;;
+                    esac
+
+                    echo "[VERIFY] stack=$stack_name expected_artifact=$artifact_uri"
+
+                    stack_status="$(aws cloudformation describe-stacks                       --stack-name "${!stack_name}"                       --query 'Stacks[0].StackStatus'                       --output text)"
+
+                    case "${!stack_status}" in
+                      CREATE_COMPLETE|UPDATE_COMPLETE|IMPORT_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
+                        ;;
+                      *)
+                        echo "[VERIFY] stack=${!stack_name} invalid status=${!stack_status}" >&2
+                        return 1
+                        ;;
+                    esac
+
+                    python3 - "${!EVIDENCE_FILE}" "${!stack_name}" "${!stack_status}" "${!artifact_uri}" "${!CURRENT_COMMIT}" <<'PY'
+                      import json, sys
+                      path, stack, status, artifact, commit = sys.argv[1:]
+                      with open(path) as f:
+                        evidence = json.load(f)
+                      evidence[stack] = {
+                        "stackStatus": status,
+                        "expectedArtifact": artifact,
+                        "commit": commit,
+                        "verified": True
+                      }
+                      with open(path, "w") as f:
+                        json.dump(evidence, f, separators=(",", ":"))
+                    PY
+                  }
+
+                  verify_stack "DATA_STACK_NAME" "s3://${!ARTIFACT_BUCKET}/${!PREFIX}data/packaged.yaml" "${!ENABLE_DATA}"
+                  verify_stack "INFRA_STACK_NAME" "s3://${!ARTIFACT_BUCKET}/${!PREFIX}infra/packaged.yaml" "${!ENABLE_INFRA}"
+                  verify_stack "APP_STACK_NAME" "s3://${!ARTIFACT_BUCKET}/${!PREFIX}app/packaged.yaml" "${!ENABLE_APP}"
+
+                  VERIFICATION_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  python3 - "${!EVIDENCE_FILE}" "${!VERIFICATION_FILE}" "${!CURRENT_COMMIT}" "${!VERIFICATION_TIME}" <<'PY'
+                    import json, sys
+                    evidence_path, verification_path, commit, verified_at = sys.argv[1:]
+                    with open(evidence_path) as f:
+                      stacks = json.load(f)
+                    result = {
+                      "verified": True,
+                      "commit": commit,
+                      "verifiedAt": verified_at,
+                      "stacks": stacks
+                    }
+                    with open(verification_path, "w") as f:
+                      json.dump(result, f, separators=(",", ":"))
+                  PY
+
+                  aws ssm put-parameter                     --name "${!DEPLOYMENT_EVIDENCE_PARAM}"                     --type String                     --value "$(cat "${!EVIDENCE_FILE}")"                     --overwrite
+
+                  aws ssm put-parameter                     --name "${!DEPLOYMENT_VERIFICATION_PARAM}"                     --type String                     --value "$(cat "${!VERIFICATION_FILE}")"                     --overwrite
+
+                  aws ssm put-parameter --name "${!LAST_DEPLOYED_COMMIT_PARAM}" --type String --value "${!CURRENT_COMMIT}" --overwrite
+                  aws ssm put-parameter --name "${!LAST_DEPLOYED_ARTIFACT_PARAM}" --type String --value "${!ARTIFACT_URI}" --overwrite
+                  aws ssm put-parameter --name "${!LAST_DEPLOYMENT_STATUS_PARAM}" --type String --value SUCCESS --overwrite
+                  aws ssm put-parameter --name "${!LAST_DEPLOYMENT_TIME_PARAM}" --type String  --overwrite
+                  printf 'DEPLOYMENT_STATUS=SUCCESS\nDEPLOYED_COMMIT=%s\nDEPLOYED_ARTIFACT=%s\n' "${!CURRENT_COMMIT}" "${!ARTIFACT_URI}" > deployment-status.env
+            post_build:
+              commands: []
+          artifacts:
+            files:
+              - deployment-status.env
+
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -2092,27 +2313,51 @@ Resources:
           - Name: CI_PATH
             Type: PLAINTEXT
             Value: !Ref CiPath
-          - Name: FRAMEWORK_PATH
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPath
-          - Name: FRAMEWORK_PREFIX
-            Type: PLAINTEXT
-            Value: !Ref FrameworkPrefix
           - Name: SSM_PREFIX
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}'
           - Name: LAST_DEPLOYED_COMMIT_PARAM
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
+          - Name: LAST_DEPLOYED_ARTIFACT_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_ARTIFACT'
+          - Name: LAST_DEPLOYMENT_STATUS_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYMENT_STATUS'
+          - Name: LAST_DEPLOYMENT_TIME_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYMENT_TIME'
+          - Name: CURRENT_EXECUTION_COMMIT_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_COMMIT'
+          - Name: CURRENT_EXECUTION_STATUS_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_STATUS'
+          - Name: CURRENT_EXECUTION_STAGE_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_STAGE'
+          - Name: CURRENT_EXECUTION_TIME_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/CURRENT_EXECUTION_TIME'
+          - Name: DEPLOYMENT_EVIDENCE_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/DEPLOYMENT_EVIDENCE'
+          - Name: DEPLOYMENT_VERIFICATION_PARAM
+            Type: PLAINTEXT
+            Value: !Sub '/${Stage}/${ServiceName}/cicd/DEPLOYMENT_VERIFICATION'
+          - Name: DATA_STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}-data'
+          - Name: INFRA_STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}-infra'
+          - Name: APP_STACK_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${Stage}-${ServiceName}'
           - Name: REQUIRED_SSM_PARAMETERS
             Type: PLAINTEXT
             Value: !Ref RequiredSsmParameters
-          - Name: DATA_LOGICAL_ID
-            Type: PLAINTEXT
-            Value: !Ref DataLogicalId
-          - Name: DATA_TABLE_NAME
-            Type: PLAINTEXT
-            Value: !Ref DataTableName
           - Name: OWNERSHIP_TAG_SERVICE
             Type: PLAINTEXT
             Value: !If
@@ -2192,10 +2437,7 @@ Resources:
               OutputArtifacts:
                 - Name: BuildArtifact
               Configuration:
-                ProjectName: !If
-                  - CreateBuildProject
-                  - !Ref BuildProject
-                  - !Ref BuildProjectName
+                ProjectName: !Ref BuildProject
                 # BuildArtifact is the CodePipeline artifact-store object produced by
                 # the Build project's buildspec artifacts section. It is not the
                 # immutable deployment prefix in ArtifactBucket.
@@ -2399,7 +2641,7 @@ Resources:
               Configuration:
                 ProjectName: !Ref RecordDeploymentProject
                 PrimarySource: SourceArtifact
-                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"CURRENT_COMMIT","value":"#{BuildVariables.CURRENT_COMMIT}","type":"PLAINTEXT"},{"name":"LAST_DEPLOYED_COMMIT_PARAM","value":"/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT","type":"PLAINTEXT"}]'
+                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"SERVICE_NAME","value":"${ServiceName}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"CURRENT_COMMIT","value":"#{BuildVariables.CURRENT_COMMIT}","type":"PLAINTEXT"},{"name":"ARTIFACT_BUCKET","value":"#{variables.ArtifactBucket}","type":"PLAINTEXT"},{"name":"ENABLE_DATA","value":"${EnableData}","type":"PLAINTEXT"},{"name":"ENABLE_INFRA","value":"${EnableInfra}","type":"PLAINTEXT"},{"name":"ENABLE_APP","value":"${EnableApp}","type":"PLAINTEXT"},{"name":"LAST_DEPLOYED_COMMIT_PARAM","value":"/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT","type":"PLAINTEXT"},{"name":"LAST_DEPLOYED_ARTIFACT_PARAM","value":"/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_ARTIFACT","type":"PLAINTEXT"},{"name":"LAST_DEPLOYMENT_STATUS_PARAM","value":"/${Stage}/${ServiceName}/cicd/LAST_DEPLOYMENT_STATUS","type":"PLAINTEXT"},{"name":"LAST_DEPLOYMENT_TIME_PARAM","value":"/${Stage}/${ServiceName}/cicd/LAST_DEPLOYMENT_TIME","type":"PLAINTEXT"}]'
 
 Outputs:
   PipelineName:
@@ -2435,9 +2677,6 @@ Outputs:
   AppTemplatePath:
     Description: Immutable app packaged template path pattern
     Value: !Sub 's3://${ArtifactBucket}/${ServiceName}/<commit-sha>/app/packaged.yaml'
-  FrameworkBundlePath:
-    Description: Framework bundle object used by inline BuildSpecs when FrameworkPath is absent
-    Value: !Sub 's3://${ArtifactBucket}/${FrameworkPrefix}/pipeline.tgz'
   CloudFormationDeployRoleArn:
     Description: CloudFormation service role for normal deploy
     Value: !GetAtt CloudFormationDeployRole.Arn
@@ -2451,11 +2690,8 @@ Outputs:
     Description: CodePipeline service role
     Value: !GetAtt PipelineRole.Arn
   BuildProjectNameOut:
-    Description: Build CodeBuild project name (created or external)
-    Value: !If
-      - CreateBuildProject
-      - !Ref BuildProject
-      - !Ref BuildProjectName
+    Description: CodeBuild project created by this CI/CD stack. Derived from Stage and ServiceName.
+    Value: !Ref BuildProject
   DeployDataProjectName:
     Description: Deploy-Data CodeBuild project
     Value: !Ref DeployDataProject

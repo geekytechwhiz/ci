@@ -3,10 +3,9 @@ service:
   root: workflow
 
 source:
-  # repository: MyvitalRx/Cf-testing
-  repository: geekytechwhiz/ci
+  repository: MyvitalRx/Cf-testing
   branch: dev
-  connectionArn: arn:aws:codeconnections:us-east-1:462778607085:connection/271c183a-9f2b-4625-af12-86cebfe37a16
+  connectionArn: ""
   ciPath: workflow/ci
 
 deployment:
@@ -18,7 +17,7 @@ data:
   enabled: true
   type: dynamodb
   logicalId: WorkflowTable
-  tableName: workflow-service-dev
+  tableName: workflow-dev-db
   ownershipTags:
     Service: workflow-service
     Purpose: WorkflowTable
@@ -50,7 +49,7 @@ changeDetection:
   data:
     - workflow/data/**
   infrastructure:
-    - workflow/infrastructure/**
+    - workflow/infra/**
   application:
     - workflow/src/**
     - workflow/serverless.yml

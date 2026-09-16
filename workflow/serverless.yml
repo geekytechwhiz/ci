@@ -23,9 +23,7 @@ provider:
   stackName: ${self:provider.stage}-workflow-service
   versionFunctions: false
 
-  deploymentBucket:
-    name: ${self:provider.stage}-mibc-workflow-service-bucket
-    serverSideEncryption: AES256
+   
   memorySize: 512
   timeout: 30
 

@@ -1,5 +1,5 @@
 version: 0.2
-# Service buildspec. Delegates execution to the generic CI/CD framework.
+# Service buildspec. Invokes the service-owned packaging hook only.
 
 env:
   shell: bash
@@ -14,9 +14,10 @@ env:
     STACK_NAME: 'dev-workflow-service'
     DATA_STACK_NAME: 'dev-workflow-service-data'
     INFRA_STACK_NAME: 'dev-workflow-service-infra'
-    WORKFLOW_TABLE_NAME: 'workflow-service-dev'
+    DATA_TABLE_NAME: 'workflow-dev-db'
+    WORKFLOW_TABLE_NAME: 'workflow-dev-db'
+    DATA_LOGICAL_ID: 'WorkflowTable'
     NODE_OPTIONS: '--max-old-space-size=2048'
-    FRAMEWORK_PATH: 'cicd/pipeline'
 
 phases:
   install:
@@ -25,94 +26,39 @@ phases:
     commands:
       - echo "Service npm install runs in ci/build.sh (workflow/package.json, including serverless-esbuild)."
 
-  pre_build:
-    commands:
-      - |
-        set -euo pipefail
-        if [ -f "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh" ]; then
-          # shellcheck disable=SC1090
-          source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
-        elif [ -f "../../cicd/pipeline/scripts/bootstrap-framework.sh" ]; then
-          source "../../cicd/pipeline/scripts/bootstrap-framework.sh"
-        else
-          echo "Framework bootstrap script not found — continuing with local packaging."
-        fi
-
   build:
     commands:
       - |
         set -euo pipefail
-        if [ -n "${CICD_SCRIPTS_DIR:-}" ] && [ -f "${CICD_SCRIPTS_DIR}/run-build.sh" ]; then
-          "${CICD_SCRIPTS_DIR}/run-build.sh"
-        else
-          chmod +x ci/build.sh
-          ci/build.sh
-        fi
-        if [ -f "${CICD_SCRIPTS_DIR:-}/promote-exported-variables.sh" ]; then
-          source "${CICD_SCRIPTS_DIR}/promote-exported-variables.sh" \
-            "${CODEBUILD_SRC_DIR:-.}/deployment-decision.env" \
-            DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
-        elif [ -f "${CODEBUILD_SRC_DIR:-.}/deployment-decision.env" ]; then
-          set -a
-          source "${CODEBUILD_SRC_DIR}/deployment-decision.env"
-          set +a
-          export DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
-        elif [ -f deployment-decision.env ]; then
+        chmod +x ci/build.sh
+        ci/build.sh
+        if [ -f deployment-decision.env ]; then
           set -a
           source deployment-decision.env
           set +a
           export DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
-        else
-          echo "ERROR: deployment-decision.env was not written. CodePipeline BuildVariables would be empty."
-          false
         fi
-        : "${DEPLOY_DATA:?DEPLOY_DATA must be exported to the CodeBuild shell}"
-        : "${DEPLOY_INFRA:?DEPLOY_INFRA must be exported to the CodeBuild shell}"
-        : "${DEPLOY_APP:?DEPLOY_APP must be exported to the CodeBuild shell}"
-        : "${CURRENT_COMMIT:?CURRENT_COMMIT must be exported to the CodeBuild shell}"
 
   post_build:
     commands:
       - |
         set -euo pipefail
         if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
-          echo "Build phase failed; not promoting CodePipeline variables."
-        else
-          if [ -f "${CICD_SCRIPTS_DIR:-}/promote-exported-variables.sh" ]; then
-            source "${CICD_SCRIPTS_DIR}/promote-exported-variables.sh" \
-              "${CODEBUILD_SRC_DIR:-.}/deployment-decision.env" \
-              DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
-          elif [ -f "${CODEBUILD_SRC_DIR:-.}/deployment-decision.env" ]; then
-            set -a
-            source "${CODEBUILD_SRC_DIR}/deployment-decision.env"
-            set +a
-            export DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
-          elif [ -f deployment-decision.env ]; then
-            set -a
-            source deployment-decision.env
-            set +a
-            export DEPLOY_DATA DEPLOY_INFRA DEPLOY_APP CURRENT_COMMIT
-          else
-            echo "ERROR: deployment-decision.env missing; #{BuildVariables.DEPLOY_DATA} would be empty."
-            false
-          fi
-          : "${DEPLOY_DATA:?DEPLOY_DATA must be exported to the CodeBuild shell}"
-          : "${DEPLOY_INFRA:?DEPLOY_INFRA must be exported to the CodeBuild shell}"
-          : "${DEPLOY_APP:?DEPLOY_APP must be exported to the CodeBuild shell}"
-          : "${CURRENT_COMMIT:?CURRENT_COMMIT must be exported to the CodeBuild shell}"
+          echo "Build phase failed."
+          exit 1
         fi
-
+        test -s data/packaged.yaml
+        test -s infra/packaged.yaml
+        test -s app/packaged.yaml
 
 artifacts:
   files:
-    - packaged.yaml
-    - .serverless/**/*
     - data/packaged.yaml
     - data/.serverless/**/*
-    - infrastructure/packaged.yaml
-    - infrastructure/.serverless/**/*
+    - infra/packaged.yaml
+    - infra/.serverless/**/*
+    - app/packaged.yaml
+    - app/.serverless/**/*
     - ci/**/*
-    - deployment-manifest.json
     - deployment-decision.env
   discard-paths: no
-

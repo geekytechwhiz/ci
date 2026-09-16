@@ -7,7 +7,7 @@
       "DeletionPolicy": "Retain",
       "UpdateReplacePolicy": "Retain",
       "Properties": {
-        "TableName": "workflow-service-dev",
+        "TableName": "workflow-dev-db",
         "BillingMode": "PAY_PER_REQUEST",
         "AttributeDefinitions": [
           {
@@ -109,7 +109,7 @@
   },
   "Outputs": {
     "ServerlessDeploymentBucketName": {
-      "Value": "dev-mibc-workflow-service-bucket",
+      "Value": "dev-workflow-service-bucket",
       "Export": {
         "Name": "sls-workflow-service-data-dev-ServerlessDeploymentBucketName"
       }
