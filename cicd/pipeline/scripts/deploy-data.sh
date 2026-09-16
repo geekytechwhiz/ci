@@ -87,6 +87,11 @@ fi
 
 "$SCRIPT_DIR/deploy-cfn.sh" data
 
+if [ -n "${DATA_PACKAGED_TEMPLATE:-}" ]; then
+  PACKAGED_TEMPLATE_PATH="${PACKAGED_TEMPLATE_PATH:-$DATA_PACKAGED_TEMPLATE}"
+fi
+validate_deployed_data_stack "$DATA_STACK_NAME" "${PACKAGED_TEMPLATE_PATH:-$(immutable_packaged_template_local_path data)}"
+
 echo "======================================="
 echo "DATA STACK DEPLOY COMPLETED"
 echo "======================================="

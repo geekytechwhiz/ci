@@ -2177,19 +2177,20 @@ Resources:
               commands:
                 - |
                   set -euo pipefail
+                  FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+                  source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+                  "${CICD_SCRIPTS_DIR}/stage-data-preflight-artifact.sh"
                   if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" = "1" ]; then
-                    source "${CICD_SCRIPTS_DIR}/promote-exported-variables.sh"                       "${CODEBUILD_SRC_DIR:-.}/data-deployment-variables.env"                       DATA_ACTION RECOVERY_REQUIRED CURRENT_COMMIT                       RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE DATA_REASON RECOVERY_CHANGE_SET_NAME
+                    source "${CICD_SCRIPTS_DIR}/promote-exported-variables.sh" \
+                      "${CODEBUILD_SRC_DIR:-.}/data-deployment-variables.env" \
+                      DATA_ACTION RECOVERY_REQUIRED CURRENT_COMMIT \
+                      RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE DATA_REASON \
+                      RECOVERY_CHANGE_SET_NAME
                   fi
-                  mkdir -p .pipeline-data-preflight
-                  printf 'CURRENT_COMMIT=%s\n' "${CURRENT_COMMIT:-}" > .pipeline-data-preflight/data-preflight-artifact.txt
-                  for f in data-deployment-variables.env deployment-data-preflight.env deployment-data-recovery.env; do
-                    if [ -f "${CODEBUILD_SRC_DIR:-.}/$f" ]; then cp "${CODEBUILD_SRC_DIR:-.}/$f" .pipeline-data-preflight/; fi
-                    if [ -f "$f" ]; then cp "$f" .pipeline-data-preflight/ || true; fi
-                  done
           artifacts:
             files:
-              - .pipeline-data-preflight/**/*
-            discard-paths: yes
+              - '**/*'
+            base-directory: pipeline-data-preflight
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -3173,12 +3174,14 @@ Resources:
                 ProjectName: !Ref DeployDataProject
                 PrimarySource: SourceArtifact
                 EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"SERVICE_NAME","value":"${ServiceName}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ARTIFACT_BUCKET","value":"#{variables.ArtifactBucket}","type":"PLAINTEXT"},{"name":"RESOURCE_NAME_PREFIX","value":"#{variables.ResourceNamePrefix}","type":"PLAINTEXT"},{"name":"SSM_PREFIX","value":"#{variables.SsmPrefix}","type":"PLAINTEXT"},{"name":"CURRENT_COMMIT","value":"#{BuildVariables.CURRENT_COMMIT}","type":"PLAINTEXT"}]'
-              # Namespace DataDeploymentVariables exposes DATA_ACTION /
-              # DATA_REASON / RECOVERY_REQUIRED / RECOVERY_CHANGE_SET_NAME /
-              # RECOVERY_STACK_NAME / RECOVERY_TABLE_NAME / RECOVERY_STAGE /
-              # CURRENT_COMMIT from CodeBuild exported-variables.
-              # Approve-Data-Recovery and Recover-Data BeforeEntry VariableCheck
-              # encodes #{DataDeploymentVariables.RECOVERY_REQUIRED} == 'true':
+              # Namespace DataDeploymentVariables exposes always-required
+              # DATA_ACTION / DATA_REASON / RECOVERY_REQUIRED / CURRENT_COMMIT /
+              # RECOVERY_STACK_NAME / RECOVERY_TABLE_NAME / RECOVERY_STAGE.
+              # RECOVERY_CHANGE_SET_NAME is exported only when recovery is
+              # required. CodePipeline VariableCheck cannot receive an empty
+              # variable, so no rule or skipped-stage interpolation may require
+              # RECOVERY_CHANGE_SET_NAME. Approve/Recover BeforeEntry checks
+              # #{DataDeploymentVariables.RECOVERY_REQUIRED} == 'true':
               # EQ true RUNS the stage; any other value fails the rule and SKIP
               # engages. CREATE/UPDATE export RECOVERY_REQUIRED=false.
 
@@ -3206,7 +3209,7 @@ Resources:
                 Version: '1'
               RunOrder: 1
               Configuration:
-                CustomData: !Sub 'Service: ${ServiceName}. Stage: ${Stage}. Commit: #{BuildVariables.CURRENT_COMMIT}. Action: #{DataDeploymentVariables.DATA_ACTION}. Existing data resource: #{DataDeploymentVariables.RECOVERY_TABLE_NAME}. Target stack: #{DataDeploymentVariables.RECOVERY_STACK_NAME}. Change set: #{DataDeploymentVariables.RECOVERY_CHANGE_SET_NAME}. Recovery: import existing DynamoDB table into CloudFormation. Safety: table will NOT be deleted or recreated. Approve only if this is the expected production table.'
+                CustomData: !Sub 'Service: ${ServiceName}. Stage: ${Stage}. Commit: #{BuildVariables.CURRENT_COMMIT}. Action: #{DataDeploymentVariables.DATA_ACTION}. Reason: #{DataDeploymentVariables.DATA_REASON}. Existing data resource: #{DataDeploymentVariables.RECOVERY_TABLE_NAME}. Target stack: #{DataDeploymentVariables.RECOVERY_STACK_NAME}. Recovery: import existing DynamoDB table into CloudFormation. Safety: table will NOT be deleted or recreated. Approve only if this is the expected production table. The IMPORT change set name is in Deploy-Data logs and DataPreflightArtifact (deployment-data-recovery.env).'
 
         - Name: Recover-Data
           BeforeEntry:
@@ -3239,7 +3242,7 @@ Resources:
               Configuration:
                 ProjectName: !Ref RecoverDataProject
                 PrimarySource: SourceArtifact
-                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"SERVICE_NAME","value":"${ServiceName}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ARTIFACT_BUCKET","value":"#{variables.ArtifactBucket}","type":"PLAINTEXT"},{"name":"RESOURCE_NAME_PREFIX","value":"#{variables.ResourceNamePrefix}","type":"PLAINTEXT"},{"name":"SSM_PREFIX","value":"#{variables.SsmPrefix}","type":"PLAINTEXT"},{"name":"CURRENT_COMMIT","value":"#{BuildVariables.CURRENT_COMMIT}","type":"PLAINTEXT"},{"name":"DATA_ACTION","value":"#{DataDeploymentVariables.DATA_ACTION}","type":"PLAINTEXT"},{"name":"RECOVERY_REQUIRED","value":"#{DataDeploymentVariables.RECOVERY_REQUIRED}","type":"PLAINTEXT"},{"name":"RECOVERY_CHANGE_SET_NAME","value":"#{DataDeploymentVariables.RECOVERY_CHANGE_SET_NAME}","type":"PLAINTEXT"},{"name":"RECOVERY_STACK_NAME","value":"#{DataDeploymentVariables.RECOVERY_STACK_NAME}","type":"PLAINTEXT"},{"name":"RECOVERY_TABLE_NAME","value":"#{DataDeploymentVariables.RECOVERY_TABLE_NAME}","type":"PLAINTEXT"},{"name":"CHANGE_SET_NAME","value":"#{DataDeploymentVariables.RECOVERY_CHANGE_SET_NAME}","type":"PLAINTEXT"},{"name":"DATA_RECOVERY_PHASE","value":"execute","type":"PLAINTEXT"},{"name":"RECOVERY_STATUS","value":"APPROVAL_GRANTED","type":"PLAINTEXT"}]'
+                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"SERVICE_NAME","value":"${ServiceName}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ARTIFACT_BUCKET","value":"#{variables.ArtifactBucket}","type":"PLAINTEXT"},{"name":"RESOURCE_NAME_PREFIX","value":"#{variables.ResourceNamePrefix}","type":"PLAINTEXT"},{"name":"SSM_PREFIX","value":"#{variables.SsmPrefix}","type":"PLAINTEXT"},{"name":"CURRENT_COMMIT","value":"#{BuildVariables.CURRENT_COMMIT}","type":"PLAINTEXT"},{"name":"DATA_ACTION","value":"#{DataDeploymentVariables.DATA_ACTION}","type":"PLAINTEXT"},{"name":"RECOVERY_REQUIRED","value":"#{DataDeploymentVariables.RECOVERY_REQUIRED}","type":"PLAINTEXT"},{"name":"RECOVERY_STACK_NAME","value":"#{DataDeploymentVariables.RECOVERY_STACK_NAME}","type":"PLAINTEXT"},{"name":"RECOVERY_TABLE_NAME","value":"#{DataDeploymentVariables.RECOVERY_TABLE_NAME}","type":"PLAINTEXT"},{"name":"DATA_RECOVERY_PHASE","value":"execute","type":"PLAINTEXT"},{"name":"RECOVERY_STATUS","value":"APPROVAL_GRANTED","type":"PLAINTEXT"}]'
 
         - Name: Deploy-Infra
           BeforeEntry:

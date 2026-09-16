@@ -501,11 +501,144 @@ NODE
   fi
 }
 
+# Data stack status classifiers. Used by Data Preflight and contract tests.
+data_stack_is_usable() {
+  case "$1" in
+    CREATE_COMPLETE|UPDATE_COMPLETE|IMPORT_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+data_stack_is_in_progress() {
+  case "$1" in
+    *_IN_PROGRESS|REVIEW_IN_PROGRESS)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Rollback itself failed. Never CREATE/UPDATE/IMPORT; operator must repair CFN first.
+data_stack_is_rollback_failed() {
+  case "$1" in
+    ROLLBACK_FAILED|UPDATE_ROLLBACK_FAILED|IMPORT_ROLLBACK_FAILED|DELETE_FAILED)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Failed terminal states where the stack name is occupied but cannot be updated.
+# Physical retained resources may still exist and require IMPORT after stack cleanup.
+data_stack_is_failed_reimport_candidate() {
+  case "$1" in
+    ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Pure classifier for the Data deployment state machine.
+# Arguments:
+#   stack_state          EXISTS|NOT_FOUND
+#   stack_status         CloudFormation StackStatus or empty
+#   table_state          EXISTS|NOT_FOUND
+#   ownership            VERIFIED|UNVERIFIED|NOT_APPLICABLE
+#   configuration        COMPATIBLE|INCOMPATIBLE|NOT_APPLICABLE
+#   managed_resource_ok  1 when a usable stack still owns the expected logical table
+classify_data_preflight_action() {
+  local stack_state="${1:-}"
+  local stack_status="${2:-}"
+  local table_state="${3:-}"
+  local ownership="${4:-}"
+  local configuration="${5:-}"
+  local managed_ok="${6:-0}"
+
+  if [ "$stack_state" = "EXISTS" ]; then
+    if data_stack_is_usable "$stack_status"; then
+      if [ "$managed_ok" = "1" ]; then
+        printf 'UPDATE'
+      else
+        printf 'STOP'
+      fi
+      return 0
+    fi
+    if [ "$stack_status" = "REVIEW_IN_PROGRESS" ]; then
+      printf 'RECOVERY_REQUIRED'
+      return 0
+    fi
+    if data_stack_is_in_progress "$stack_status"; then
+      printf 'STOP'
+      return 0
+    fi
+    if data_stack_is_rollback_failed "$stack_status"; then
+      printf 'STOP'
+      return 0
+    fi
+    if data_stack_is_failed_reimport_candidate "$stack_status"; then
+      if [ "$table_state" = "NOT_FOUND" ]; then
+        printf 'CREATE'
+        return 0
+      fi
+      if [ "$table_state" = "EXISTS" ] && [ "$ownership" = "VERIFIED" ] && [ "$configuration" = "COMPATIBLE" ]; then
+        printf 'RECOVERY_REQUIRED'
+        return 0
+      fi
+      printf 'STOP'
+      return 0
+    fi
+    printf 'STOP'
+    return 0
+  fi
+
+  if [ "$table_state" = "NOT_FOUND" ]; then
+    printf 'CREATE'
+    return 0
+  fi
+  if [ "$table_state" = "EXISTS" ] && [ "$ownership" = "VERIFIED" ] && [ "$configuration" = "COMPATIBLE" ]; then
+    printf 'RECOVERY_REQUIRED'
+    return 0
+  fi
+  printf 'STOP'
+}
+
+# Always-required DataDeploymentVariables. RECOVERY_CHANGE_SET_NAME is required
+# only when RECOVERY_REQUIRED=true. Empty is a valid normal CREATE/UPDATE value.
+require_data_deployment_variables() {
+  local required_var
+  for required_var in DATA_ACTION RECOVERY_REQUIRED CURRENT_COMMIT \
+    RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE DATA_REASON; do
+    if [ -z "${!required_var:-}" ]; then
+      echo "ERROR: ${required_var} is required for DataDeploymentVariables." >&2
+      return 1
+    fi
+  done
+  if [ "${RECOVERY_REQUIRED:-false}" = "true" ]; then
+    if [ -z "${RECOVERY_CHANGE_SET_NAME:-}" ]; then
+      echo "ERROR: RECOVERY_CHANGE_SET_NAME is required when recovery is required" >&2
+      return 1
+    fi
+  fi
+}
+
 # Remove a failed CloudFormation stack record so CREATE/IMPORT can retry.
 # DynamoDB DeletionPolicy Retain keeps any physical table; do not DeleteTable.
 delete_failed_cfn_stack_record() {
   local stack="$1"
   local status="$2"
+  local table_exists=0
+  local deletion_policy=""
 
   case "$status" in
     ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
@@ -515,6 +648,33 @@ delete_failed_cfn_stack_record() {
       return 1
       ;;
   esac
+
+  if [ -n "${DATA_TABLE_NAME:-}" ] && aws dynamodb describe-table \
+    --region "$AWS_REGION" \
+    --table-name "$DATA_TABLE_NAME" >/dev/null 2>&1; then
+    table_exists=1
+  fi
+
+  if [ "$table_exists" -eq 1 ]; then
+    echo "Physical table ${DATA_TABLE_NAME} exists. Stack-record delete is allowed only because DeletionPolicy Retain keeps the table."
+    if [ -n "${PACKAGED_TEMPLATE_PATH:-${DATA_PACKAGED_TEMPLATE:-}}" ] && [ -n "${DATA_LOGICAL_ID:-}" ]; then
+      deletion_policy="$(
+        TEMPLATE_PATH="${PACKAGED_TEMPLATE_PATH:-${DATA_PACKAGED_TEMPLATE}}" \
+        LOGICAL_ID="$DATA_LOGICAL_ID" \
+        node -e '
+          const fs = require("fs");
+          const t = JSON.parse(fs.readFileSync(process.env.TEMPLATE_PATH, "utf8"));
+          const r = (t.Resources || {})[process.env.LOGICAL_ID] || {};
+          process.stdout.write(r.DeletionPolicy || "");
+        ' 2>/dev/null || true
+      )"
+      if [ "$deletion_policy" != "Retain" ]; then
+        echo "ERROR: Refusing to delete stack ${stack} while ${DATA_TABLE_NAME} exists and artifact DeletionPolicy is '${deletion_policy:-missing}'." >&2
+        echo "ERROR: Physical DynamoDB tables are never deleted or recreated as a shortcut." >&2
+        return 1
+      fi
+    fi
+  fi
 
   echo "Removing failed CloudFormation stack record ${stack} (${status})."
   echo "DeletionPolicy Retain keeps existing DynamoDB tables. Tables are not deleted or recreated."
@@ -528,6 +688,135 @@ delete_failed_cfn_stack_record() {
     echo "ERROR: Failed to delete the failed stack record ${stack}. DynamoDB was not targeted for deletion." >&2
     return 1
   fi
+}
+
+# After CloudFormation deploy succeeds, verify the live Data stack and table
+# match the immutable artifact. aws cloudformation deploy exit 0 is not enough.
+validate_deployed_data_stack() {
+  local stack="${1:-${DATA_STACK_NAME}}"
+  local template_path="${2:-${PACKAGED_TEMPLATE_PATH:-}}"
+  local status physical_id table_status ownership_ok=0
+  local tags_json tag_service tag_stage tag_purpose tag_managed
+
+  echo "Validating deployed Data stack ${stack} against artifact identity"
+
+  status="$(aws cloudformation describe-stacks \
+    --region "$AWS_REGION" \
+    --stack-name "$stack" \
+    --query 'Stacks[0].StackStatus' \
+    --output text)"
+  echo "  stack status=${status}"
+  case "$status" in
+    CREATE_COMPLETE|UPDATE_COMPLETE|IMPORT_COMPLETE)
+      ;;
+    *)
+      echo "ERROR: Data stack ${stack} status is ${status:-missing}, expected CREATE_COMPLETE, UPDATE_COMPLETE, or IMPORT_COMPLETE." >&2
+      print_cfn_failure_diagnostics "$stack"
+      return 1
+      ;;
+  esac
+
+  physical_id="$(aws cloudformation describe-stack-resource \
+    --region "$AWS_REGION" \
+    --stack-name "$stack" \
+    --logical-resource-id "$DATA_LOGICAL_ID" \
+    --query 'StackResourceDetail.PhysicalResourceId' \
+    --output text)"
+  echo "  logical ${DATA_LOGICAL_ID} physical=${physical_id}"
+  if [ "${physical_id}" != "${DATA_TABLE_NAME}" ]; then
+    echo "ERROR: Logical ${DATA_LOGICAL_ID} physical id '${physical_id:-missing}' does not match artifact TableName '${DATA_TABLE_NAME}'." >&2
+    return 1
+  fi
+
+  table_status="$(aws dynamodb describe-table \
+    --region "$AWS_REGION" \
+    --table-name "$DATA_TABLE_NAME" \
+    --query 'Table.TableStatus' \
+    --output text)"
+  echo "  table ${DATA_TABLE_NAME} status=${table_status}"
+  if [ "${table_status}" != "ACTIVE" ]; then
+    echo "ERROR: DynamoDB table ${DATA_TABLE_NAME} status is ${table_status:-missing}, expected ACTIVE." >&2
+    return 1
+  fi
+
+  tags_json="$(aws dynamodb list-tags-of-resource \
+    --region "$AWS_REGION" \
+    --resource-arn "$(aws dynamodb describe-table --region "$AWS_REGION" --table-name "$DATA_TABLE_NAME" --query 'Table.TableArn' --output text)" \
+    --output json)"
+  tag_service="$(TAGS_JSON="$tags_json" node -e 'const t=JSON.parse(process.env.TAGS_JSON).Tags||[]; const m={}; for (const x of t) m[x.Key]=x.Value; process.stdout.write(m.Service||"");')"
+  tag_stage="$(TAGS_JSON="$tags_json" node -e 'const t=JSON.parse(process.env.TAGS_JSON).Tags||[]; const m={}; for (const x of t) m[x.Key]=x.Value; process.stdout.write(m.Stage||"");')"
+  tag_purpose="$(TAGS_JSON="$tags_json" node -e 'const t=JSON.parse(process.env.TAGS_JSON).Tags||[]; const m={}; for (const x of t) m[x.Key]=x.Value; process.stdout.write(m.Purpose||"");')"
+  tag_managed="$(TAGS_JSON="$tags_json" node -e 'const t=JSON.parse(process.env.TAGS_JSON).Tags||[]; const m={}; for (const x of t) m[x.Key]=x.Value; process.stdout.write(m.ManagedBy||"");')"
+  echo "  tags Service=${tag_service} Stage=${tag_stage} Purpose=${tag_purpose} ManagedBy=${tag_managed}"
+
+  if [ "${tag_service}" = "${OWNERSHIP_TAG_SERVICE}" ] \
+    && [ "${tag_stage}" = "${OWNERSHIP_TAG_STAGE:-$STAGE}" ] \
+    && [ "${tag_purpose}" = "${OWNERSHIP_TAG_PURPOSE}" ] \
+    && [ "${tag_managed}" = "${OWNERSHIP_TAG_MANAGED_BY}" ]; then
+    ownership_ok=1
+  fi
+  if [ "$ownership_ok" -ne 1 ]; then
+    echo "ERROR: Deployed table tags do not match artifact identity Service=${OWNERSHIP_TAG_SERVICE} Stage=${OWNERSHIP_TAG_STAGE:-$STAGE} Purpose=${OWNERSHIP_TAG_PURPOSE} ManagedBy=${OWNERSHIP_TAG_MANAGED_BY}." >&2
+    return 1
+  fi
+
+  if [ -n "$template_path" ] && [ -f "$template_path" ]; then
+    local table_json backups_json
+    table_json="$(aws dynamodb describe-table \
+      --region "$AWS_REGION" \
+      --table-name "$DATA_TABLE_NAME" \
+      --output json)"
+    backups_json="$(aws dynamodb describe-continuous-backups \
+      --region "$AWS_REGION" \
+      --table-name "$DATA_TABLE_NAME" \
+      --output json)"
+    TABLE_JSON="$table_json" BACKUPS_JSON="$backups_json" \
+    TEMPLATE_PATH="$template_path" LOGICAL_ID="$DATA_LOGICAL_ID" TABLE_NAME="$DATA_TABLE_NAME" node -e '
+      const fs = require("fs");
+      const t = JSON.parse(fs.readFileSync(process.env.TEMPLATE_PATH, "utf8"));
+      const r = (t.Resources || {})[process.env.LOGICAL_ID];
+      if (!r || r.Type !== "AWS::DynamoDB::Table") {
+        console.error("ERROR: artifact is missing AWS::DynamoDB::Table " + process.env.LOGICAL_ID);
+        process.exit(1);
+      }
+      const expected = r.Properties || {};
+      if (expected.TableName !== process.env.TABLE_NAME) {
+        console.error("ERROR: artifact TableName " + expected.TableName + " does not match " + process.env.TABLE_NAME);
+        process.exit(1);
+      }
+      if (r.DeletionPolicy !== "Retain" || r.UpdateReplacePolicy !== "Retain") {
+        console.error("ERROR: artifact must keep DeletionPolicy/UpdateReplacePolicy Retain for recovery/import.");
+        process.exit(1);
+      }
+      const table = (JSON.parse(process.env.TABLE_JSON || "{}").Table) || {};
+      const backups = JSON.parse(process.env.BACKUPS_JSON || "{}");
+      const errors = [];
+      const sortKeys = (list) => (list || []).map((k) => k.AttributeName + ":" + k.KeyType).sort().join(",");
+      if (sortKeys(table.KeySchema) !== sortKeys(expected.KeySchema)) {
+        errors.push("KeySchema mismatch");
+      }
+      const liveBilling = (table.BillingModeSummary && table.BillingModeSummary.BillingMode) || table.BillingMode || "";
+      if (expected.BillingMode && liveBilling !== expected.BillingMode) {
+        errors.push("BillingMode is " + liveBilling + ", expected " + expected.BillingMode);
+      }
+      if (expected.StreamSpecification) {
+        const live = table.StreamSpecification || {};
+        if (live.StreamViewType !== expected.StreamSpecification.StreamViewType) {
+          errors.push("StreamViewType is " + (live.StreamViewType || "missing"));
+        }
+      }
+      if (expected.PointInTimeRecoverySpecification && expected.PointInTimeRecoverySpecification.PointInTimeRecoveryEnabled === true) {
+        const pitr = (((backups.ContinuousBackupsDescription || {}).PointInTimeRecoveryDescription || {}).PointInTimeRecoveryStatus);
+        if (pitr !== "ENABLED") errors.push("PITR is " + (pitr || "missing"));
+      }
+      if (errors.length) {
+        for (const e of errors) console.error("ERROR: " + e);
+        process.exit(1);
+      }
+    '
+  fi
+
+  echo "Deployed Data stack ${stack} matches the immutable artifact."
 }
 
 upload_environment_artifact() {

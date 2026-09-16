@@ -20,6 +20,8 @@ if [ -n "${CODEBUILD_SRC_DIR_DataPreflightArtifact:-}" ]; then
   for rel in \
     deployment-data-preflight.env \
     deployment-data-recovery.env \
+    pipeline-data-preflight/deployment-data-preflight.env \
+    pipeline-data-preflight/deployment-data-recovery.env \
     "apps/${SERVICE_NAME}/deployment-data-preflight.env" \
     "apps/${SERVICE_NAME}/deployment-data-recovery.env"
   do

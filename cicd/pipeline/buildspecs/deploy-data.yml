@@ -2,6 +2,10 @@ version: 0.2
 # Reference buildspec: Deploy-Data
 # Preflight → CREATE/UPDATE via deploy-data, or prepare IMPORT recovery.
 # RECOVERY_REQUIRED exits 0 with exported recovery variables for approval.
+#
+# Inline CloudFormation BuildSpec must stay in sync with this file.
+# RECOVERY_CHANGE_SET_NAME is listed for recovery exports; promote treats it
+# as optional unless RECOVERY_REQUIRED=true.
 
 env:
   shell: bash
@@ -34,30 +38,23 @@ phases:
     commands:
       - |
         set -euo pipefail
+        FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+        source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+        "${CICD_SCRIPTS_DIR}/stage-data-preflight-artifact.sh"
         if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
           echo "Build phase failed; not promoting CodePipeline variables."
         else
-          source "${CICD_FRAMEWORK_DIR:-${CICD_SCRIPTS_DIR:-.}/..}/scripts/promote-exported-variables.sh" \
+          source "${CICD_SCRIPTS_DIR}/promote-exported-variables.sh" \
             "${CODEBUILD_SRC_DIR:-.}/data-deployment-variables.env" \
             DATA_ACTION RECOVERY_REQUIRED CURRENT_COMMIT \
-            RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE
+            RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE DATA_REASON \
+            RECOVERY_CHANGE_SET_NAME
         fi
-        # Always emit DataPreflightArtifact. Recovery env is optional; staging
-        # the marker guarantees CodePipeline has an S3 object to DOWNLOAD_SOURCE.
-        SRC_DIR="${CODEBUILD_SRC_DIR:-.}"
-        mkdir -p "${SRC_DIR}/.pipeline-data-preflight"
-        printf 'CURRENT_COMMIT=%s\n' "${CURRENT_COMMIT:-}" > "${SRC_DIR}/.pipeline-data-preflight/data-preflight-artifact.txt"
-        for f in data-deployment-variables.env deployment-data-preflight.env deployment-data-recovery.env; do
-          if [ -f "${SRC_DIR}/$f" ]; then
-            cp "${SRC_DIR}/$f" "${SRC_DIR}/.pipeline-data-preflight/"
-          elif [ -f "$f" ]; then
-            cp "$f" "${SRC_DIR}/.pipeline-data-preflight/"
-          fi
-        done
 
-# Required for CodePipeline DataPreflightArtifact. Optional recovery env is
-# copied only when present so CREATE/UPDATE does not fail UPLOAD_ARTIFACTS.
+# Required for CodePipeline DataPreflightArtifact. Use a non-hidden
+# base-directory so CodeBuild globbing cannot miss the payload.
+# Optional recovery env is copied only when present.
 artifacts:
   files:
-    - .pipeline-data-preflight/**/*
-  discard-paths: yes
+    - '**/*'
+  base-directory: pipeline-data-preflight

@@ -12,10 +12,27 @@
 #   UPDATE              Data stack exists, is usable, and CloudFormation still
 #                       manages the expected DynamoDB table physical resource
 #   CREATE              Data stack missing and the expected table is missing
-#   RECOVERY_REQUIRED   Data stack missing, expected table exists, all ownership
-#                       tags verified, configuration compatible (import is NOT run)
+#                       (also: failed stack record + table missing → delete record
+#                       then CREATE; physical tables are never deleted)
+#   RECOVERY_REQUIRED   Data stack missing or failed, expected table exists, all
+#                       ownership tags verified, configuration compatible
+#                       (import is NOT run here)
 #   STOP                Unsafe stack state, resource not managed, unverified
 #                       ownership, missing artifact, or incompatible configuration
+#
+# State machine (stack, table) → action. Physical DynamoDB is never deleted.
+#   1. missing + missing                         → CREATE
+#   2. missing + exists (verified+compatible)    → RECOVERY_REQUIRED
+#   3. CREATE_COMPLETE + exists (managed)        → UPDATE
+#   4. UPDATE_COMPLETE + exists (managed)        → UPDATE
+#   5. ROLLBACK_COMPLETE + missing               → CREATE (delete failed record)
+#   6. ROLLBACK_COMPLETE + exists (verified)     → RECOVERY_REQUIRED
+#   7. CREATE_FAILED + missing                   → CREATE (delete failed record)
+#   8. CREATE_FAILED + exists (verified)         → RECOVERY_REQUIRED
+#   9. UPDATE_ROLLBACK_FAILED + exists           → STOP
+#  10. unrelated existing table (unverified)     → STOP
+# Failed-record delete is only ROLLBACK_COMPLETE|CREATE_FAILED|
+# IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED. Never CREATE_COMPLETE/UPDATE_COMPLETE.
 #
 # Pipeline artifact source of truth (when CURRENT_COMMIT is set):
 #   s3://$ARTIFACT_BUCKET/${SERVICE_NAME}/$CURRENT_COMMIT/data/packaged.yaml
@@ -139,52 +156,10 @@ aws_json() {
   aws "$@" --output json
 }
 
-stack_is_usable() {
-  case "$1" in
-    CREATE_COMPLETE|UPDATE_COMPLETE|IMPORT_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-stack_is_in_progress() {
-  case "$1" in
-    *_IN_PROGRESS|REVIEW_IN_PROGRESS)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-# Rollback itself failed. Never CREATE/UPDATE/IMPORT; operator must repair CFN first.
-stack_is_rollback_failed() {
-  case "$1" in
-    ROLLBACK_FAILED|UPDATE_ROLLBACK_FAILED|IMPORT_ROLLBACK_FAILED|DELETE_FAILED)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-# Failed terminal states where the stack name is occupied but cannot be updated.
-# Physical retained resources may still exist and require IMPORT after stack cleanup.
-stack_is_failed_reimport_candidate() {
-  case "$1" in
-    ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
+stack_is_usable() { data_stack_is_usable "$1"; }
+stack_is_in_progress() { data_stack_is_in_progress "$1"; }
+stack_is_rollback_failed() { data_stack_is_rollback_failed "$1"; }
+stack_is_failed_reimport_candidate() { data_stack_is_failed_reimport_candidate "$1"; }
 
 resource_is_healthy() {
   stack_is_usable "$1"
