@@ -33,7 +33,7 @@ STAGE="${STAGE:-dev}"
 
 STACK_NAME="${STAGE}-${SERVICE}-cicd"
 PIPELINE_NAME="${STAGE}-${SERVICE}-pipeline"
-TEMPLATE_PATH="$CICD_ROOT/cloudformation/pipeline/generic-codepipeline.yml"
+TEMPLATE_PATH="$CICD_ROOT/cloudformation/pipeline/generic-codepipeline-validation-fixed-v3.yml"
 
 echo "========================================"
 echo "DEPLOYING CI/CD PIPELINE STACK"
@@ -81,18 +81,29 @@ const pipeBucket = env.getVal("pipelineBucket:") || "dev-pipeline-artifacts";
 const deployBucket = env.getVal("deploymentBucket:") || "dev-deployment-artifacts";
 const kmsKeyArn = env.getVal("kmsKeyArn:");
  
-const repo = svc.getVal("repository:") || "geekytechwhiz/ci";
+const repo = svc.getVal("repository:") || "example-org/example-repo";
 const branch = svc.getVal("branch:") || "main";
-const ciPath = svc.getVal("ciPath:") || "workflow/ci";
+const ciPath = svc.getVal("ciPath:") || "ci";
 const tableName = svc.getVal("tableName:") || process.argv[3] + "-" + process.argv[4];
-const logicalId = svc.getVal("logicalId:") || "WorkflowTable";
+const logicalId = svc.getVal("logicalId:") || "PrimaryTable";
+const ssmPrefix = svc.getVal("prefix:") || ("/" + process.argv[4] + "/" + process.argv[3]);
+const resourceNamePrefix = svc.getVal("resourceNamePrefix:") || "";
+const ownershipPurpose = svc.getVal("Purpose:") || "primaryDataTable";
+const ownershipService = svc.getVal("Service:") || process.argv[3];
 
- 
+console.log(`ServiceName=${process.argv[3]}`);
 console.log(`Stage=${process.argv[4]}`);
 console.log(`PipelineName=${process.argv[4]}-${process.argv[3]}-pipeline`);
 console.log(`CiPath=${ciPath}`);
 console.log(`DataTableName=${tableName}`);
 console.log(`DataLogicalId=${logicalId}`);
+console.log(`SsmPrefix=${ssmPrefix}`);
+console.log(`OwnershipTagPurpose=${ownershipPurpose}`);
+console.log(`OwnershipTagService=${ownershipService}`);
+console.log(`RequiredSsmParameters=TABLE_NAME,TABLE_ARN,STREAM_ARN,SQS_QUEUE_URL,SQS_QUEUE_ARN,EVENT_BUS_NAME,EVENT_BUS_ARN`);
+if (resourceNamePrefix) {
+  console.log(`ResourceNamePrefix=${resourceNamePrefix}`);
+}
 console.log(`ArtifactBucketName=${pipeBucket}`);
 console.log(`ArtifactBucket=${deployBucket}`);
 console.log(`GitHubConnectionArn=${connArn}`);
@@ -127,7 +138,7 @@ if command -v aws >/dev/null 2>&1; then
       aws cloudformation deploy
       --template-file "$TEMPLATE_PATH"
       --stack-name "$STACK_NAME"
-      --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+      --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND
       --parameter-overrides "${PARAM_ARGS[@]}"
     )
     if [ -n "$S3_BUCKET" ]; then

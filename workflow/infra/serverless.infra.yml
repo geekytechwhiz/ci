@@ -24,6 +24,7 @@ provider:
     Stack: infrastructure
 
 custom:
+  naming: ${file(../config/naming.yml)}
   infra: ${file(../config/infra-${self:provider.stage}.yml)}
 
 resources:

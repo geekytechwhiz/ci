@@ -1,7 +1,7 @@
 # SSM contract consumed by the application stack.
 # Data Stack publishes TABLE_NAME, TABLE_ARN, STREAM_ARN.
 # Infrastructure stack publishes SQS_QUEUE_URL, SQS_QUEUE_ARN.
-prefix: /${self:provider.stage}/workflow-service
+prefix: ${self:custom.naming.ssmPrefix}
 
 required:
   - TABLE_NAME
@@ -9,3 +9,5 @@ required:
   - STREAM_ARN
   - SQS_QUEUE_URL
   - SQS_QUEUE_ARN
+  - EVENT_BUS_NAME
+  - EVENT_BUS_ARN

@@ -5,4 +5,4 @@ Action:
   - dynamodb:DescribeStream
   - dynamodb:ListStreams
 Resource:
-  - '{{resolve:ssm:/${self:provider.stage}/workflow-service/STREAM_ARN}}'
+  - '{{resolve:ssm:${self:custom.naming.ssmPrefix}/STREAM_ARN}}'

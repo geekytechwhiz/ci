@@ -32,9 +32,10 @@ export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=2048}"
 SERVERLESS_VERSION="${SERVERLESS_VERSION:-3.40.0}"
 SERVERLESS_BIN="$SERVICE_DIR/node_modules/.bin/serverless"
 
-DATA_STACK_NAME="${DATA_STACK_NAME:-${STAGE}-workflow-service-data}"
-INFRA_STACK_NAME="${INFRA_STACK_NAME:-${STAGE}-workflow-service-infra}"
-APP_STACK_NAME="${APP_STACK_NAME:-${STACK_NAME:-${STAGE}-workflow-service}}"
+SERVICE_NAME="${SERVICE_NAME:-workflow-service}"
+DATA_STACK_NAME="${DATA_STACK_NAME:-${STAGE}-${SERVICE_NAME}-data}"
+INFRA_STACK_NAME="${INFRA_STACK_NAME:-${STAGE}-${SERVICE_NAME}-infra}"
+APP_STACK_NAME="${APP_STACK_NAME:-${STACK_NAME:-${STAGE}-${SERVICE_NAME}}}"
 
 ###############################################################################
 # 1. Validate prerequisites
@@ -52,7 +53,7 @@ command -v npm >/dev/null 2>&1 || {
 }
 
 if [ ! -d data ] || [ ! -d infra ] || [ ! -f serverless.yml ]; then
-  echo "ERROR: SERVICE_DIR=$SERVICE_DIR is not the workflow service root (need data/, infra/, serverless.yml)" >&2
+  echo "ERROR: SERVICE_DIR=$SERVICE_DIR is missing data/, infra/, or serverless.yml" >&2
   exit 1
 fi
 

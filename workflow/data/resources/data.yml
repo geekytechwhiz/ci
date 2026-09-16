@@ -7,7 +7,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      TableName: workflow-dev-db
+      TableName: ${self:custom.tableName}
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: pk
@@ -41,7 +41,7 @@ Resources:
   WorkflowTableNameParameter:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /${self:provider.stage}/workflow-service/TABLE_NAME
+      Name: ${self:custom.naming.ssmPrefix}/TABLE_NAME
       Type: String
       Description: Workflow Service DynamoDB table name
       Value: !Ref WorkflowTable
@@ -52,7 +52,7 @@ Resources:
   WorkflowTableArnParameter:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /${self:provider.stage}/workflow-service/TABLE_ARN
+      Name: ${self:custom.naming.ssmPrefix}/TABLE_ARN
       Type: String
       Description: Workflow Service DynamoDB table ARN
       Value: !GetAtt WorkflowTable.Arn
@@ -63,7 +63,7 @@ Resources:
   WorkflowTableStreamArnParameter:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /${self:provider.stage}/workflow-service/STREAM_ARN
+      Name: ${self:custom.naming.ssmPrefix}/STREAM_ARN
       Type: String
       Description: Workflow Service DynamoDB stream ARN
       Value: !GetAtt WorkflowTable.StreamArn

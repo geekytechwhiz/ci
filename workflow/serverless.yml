@@ -26,6 +26,10 @@ provider:
    
   memorySize: 512
   timeout: 30
+  apiName: ${self:custom.naming.apiName}
+  iam:
+    role:
+      name: ${self:custom.naming.lambdaRoleName}
 
   tracing:
     lambda: true
@@ -50,6 +54,7 @@ provider:
     - ${file(../infra/serverless/permissions/xray.yml)}
 
 custom:
+  naming: ${file(./config/naming.yml)}
   sharedSsmPaths: ${file(../infra/serverless/config/shared-ssm-paths.yml)}
   logRetentionByStage: ${file(../infra/serverless/config/log-retention-by-stage.yml)}
   app: ${file(./config/app-custom.yml)}
@@ -60,7 +65,7 @@ custom:
     platformOwner: workflow-service
     parameters:
       WORKFLOW_EVENTS_QUEUE_URL:
-        value: '{{resolve:ssm:/${self:provider.stage}/workflow-service/SQS_QUEUE_URL}}'
+        value: '{{resolve:ssm:${self:custom.naming.ssmPrefix}/SQS_QUEUE_URL}}'
       LAMBDA_LOG_RETENTION_DAYS:
         value: ${self:custom.logRetentionByStage.${self:provider.stage}, '14'}
 
@@ -72,6 +77,7 @@ custom:
 
 functions:
   api:
+    name: ${self:custom.naming.lambdaApiName}
     handler: src/handlers/http.main
     description: HTTP health endpoint for CI/CD pipeline validation
     events:
@@ -84,15 +90,17 @@ functions:
             '200': OK
 
   events:
+    name: ${self:custom.naming.lambdaEventsName}
     handler: src/handlers/events.main
     description: SQS consumer for EventBridge → SQS event flow
     timeout: 30
     memorySize: 256
     events:
       - sqs:
-          arn: '{{resolve:ssm:/${self:provider.stage}/workflow-service/SQS_QUEUE_ARN}}'
+          arn: '{{resolve:ssm:${self:custom.naming.ssmPrefix}/SQS_QUEUE_ARN}}'
           batchSize: 5
           functionResponseType: ReportBatchItemFailures
 
 resources:
   - ${file(./config/resources/gateway-responses.yml)}
+  - ${file(./config/resources/lambda-retain.yml)}

@@ -5,4 +5,4 @@ Action:
   - sqs:GetQueueAttributes
   - sqs:ChangeMessageVisibility
 Resource:
-  - '{{resolve:ssm:/${self:provider.stage}/workflow-service/SQS_QUEUE_ARN}}'
+  - '{{resolve:ssm:${self:custom.naming.ssmPrefix}/SQS_QUEUE_ARN}}'

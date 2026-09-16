@@ -54,6 +54,7 @@ fail_stop() {
   log "ERROR: execute-change-set was not called, or post-import validation failed."
   log "ERROR: The DynamoDB table was not deleted or recreated. SSM parameters were not written."
   log "ERROR: A normal Data UPDATE was not performed."
+  print_cfn_failure_diagnostics "${DATA_STACK_NAME:-}"
   exit 1
 }
 

@@ -194,6 +194,19 @@ describe_data_stack_or_fail() {
     return 0
   fi
 
+  case "$status" in
+    ROLLBACK_FAILED|UPDATE_ROLLBACK_FAILED|IMPORT_ROLLBACK_FAILED|DELETE_FAILED)
+      print_cfn_failure_diagnostics "${DATA_STACK_NAME}"
+      fail_stop "Data stack is ${status}. IMPORT cannot run until the failed rollback is repaired. Physical resources were not deleted."
+      ;;
+    ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
+      STACK_EXISTS_STATUS="$status"
+      log "Data stack is ${status} and cannot be updated. Preparing IMPORT requires removing the failed stack record only."
+      log "DeletionPolicy Retain keeps the DynamoDB table. The table will not be deleted."
+      return 0
+      ;;
+  esac
+
   fail_stop "Data stack unexpectedly exists (${status}). Refusing to prepare an IMPORT change set against a live stack."
 }
 
@@ -920,6 +933,23 @@ fi
 
 CHANGE_SET_NAME="$(deterministic_recovery_change_set_name)"
 log "IMPORT change set name: ${CHANGE_SET_NAME}"
+
+case "${STACK_EXISTS_STATUS}" in
+  ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
+    log "Removing failed CloudFormation stack record ${DATA_STACK_NAME} (${STACK_EXISTS_STATUS})."
+    log "DeletionPolicy Retain keeps ${DATA_TABLE_NAME}. The table is not deleted or recreated."
+    aws cloudformation delete-stack \
+      --region "$AWS_REGION" \
+      --stack-name "$DATA_STACK_NAME"
+    if ! aws cloudformation wait stack-delete-complete \
+      --region "$AWS_REGION" \
+      --stack-name "$DATA_STACK_NAME"; then
+      print_cfn_failure_diagnostics "${DATA_STACK_NAME}"
+      fail_stop "Failed to delete the failed stack record ${DATA_STACK_NAME}. The DynamoDB table was not targeted for deletion."
+    fi
+    STACK_EXISTS_STATUS=""
+    ;;
+esac
 
 reused_change_set=0
 if [ "${STACK_EXISTS_STATUS}" = "REVIEW_IN_PROGRESS" ]; then

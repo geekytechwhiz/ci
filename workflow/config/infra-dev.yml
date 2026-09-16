@@ -1,3 +1,3 @@
 # Infrastructure values — resolved with --stage (default dev).
-# Queue physical name: {stage}-workflow-service-events
-queueName: ${self:provider.stage}-workflow-service-events
+# Queue physical name is ${self:custom.naming.queueName} (nvdev-use1-mvx prefix).
+queueName: ${self:custom.naming.queueName}

@@ -1,8 +1,10 @@
 Resources:
   WorkflowEventsQueue:
     Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      QueueName: ${self:custom.infra.queueName}
+      QueueName: ${self:custom.naming.queueName}
       VisibilityTimeout: 180
       ReceiveMessageWaitTimeSeconds: 20
       MessageRetentionPeriod: 1209600
@@ -19,7 +21,7 @@ Resources:
   WorkflowEventsQueueUrlParameter:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /${self:provider.stage}/workflow-service/SQS_QUEUE_URL
+      Name: ${self:custom.naming.ssmPrefix}/SQS_QUEUE_URL
       Type: String
       Description: Workflow events queue URL
       Value:
@@ -31,7 +33,7 @@ Resources:
   WorkflowEventsQueueArnParameter:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /${self:provider.stage}/workflow-service/SQS_QUEUE_ARN
+      Name: ${self:custom.naming.ssmPrefix}/SQS_QUEUE_ARN
       Type: String
       Description: Workflow events queue ARN
       Value:
@@ -58,7 +60,7 @@ Resources:
         mutability:
           Name: must-never-change
     Properties:
-      Name: workflow-service-bus-${self:provider.stage}
+      Name: ${self:custom.naming.eventBusName}
       Tags:
         - Key: Service
           Value: workflow-service
@@ -72,7 +74,7 @@ Resources:
   WorkflowEventsToQueueRule:
     Type: AWS::Events::Rule
     Properties:
-      Name: ${self:provider.stage}-workflow-service-to-sqs
+      Name: ${self:custom.naming.eventRuleName}
       Description: Forward workflow-service events from the service bus to SQS
       EventBusName: !Ref WorkflowEventsBus
       EventPattern:
@@ -104,7 +106,7 @@ Resources:
   WorkflowEventsBusNameParameter:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /${self:provider.stage}/workflow-service/EVENT_BUS_NAME
+      Name: ${self:custom.naming.ssmPrefix}/EVENT_BUS_NAME
       Type: String
       Description: Workflow events EventBridge bus name
       Value: !Ref WorkflowEventsBus
@@ -115,7 +117,7 @@ Resources:
   WorkflowEventsBusArnParameter:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /${self:provider.stage}/workflow-service/EVENT_BUS_ARN
+      Name: ${self:custom.naming.ssmPrefix}/EVENT_BUS_ARN
       Type: String
       Description: Workflow events EventBridge bus ARN
       Value: !GetAtt WorkflowEventsBus.Arn

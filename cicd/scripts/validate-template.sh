@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CICD_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-TEMPLATE_PATH="${1:-$CICD_ROOT/cloudformation/pipeline/generic-codepipeline.yml}"
+TEMPLATE_PATH="${1:-$CICD_ROOT/cloudformation/pipeline/generic-codepipeline-validation-fixed-v3.yml}"
 
 echo "========================================"
 echo "VALIDATING CLOUDFORMATION TEMPLATE"

@@ -6,13 +6,13 @@ LOG_LEVEL: warn
 AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1'
 
 # POC SSM contract — Data Stack publishes TABLE_*; Infra publishes SQS_QUEUE_*.
-WORKFLOW_EVENTS_QUEUE_URL: '{{resolve:ssm:/${self:provider.stage}/workflow-service/SQS_QUEUE_URL}}'
-WORKFLOW_TABLE: '{{resolve:ssm:/${self:provider.stage}/workflow-service/TABLE_NAME}}'
+WORKFLOW_EVENTS_QUEUE_URL: '{{resolve:ssm:${self:custom.naming.ssmPrefix}/SQS_QUEUE_URL}}'
+WORKFLOW_TABLE: '{{resolve:ssm:${self:custom.naming.ssmPrefix}/TABLE_NAME}}'
 
 # Bus / DLQ are not published by the POC stacks. Keep conventional names so the
 # application still packages; restore {{resolve:ssm:...}} when those stacks publish them.
 USER_TABLE: '{{resolve:ssm:${self:custom.sharedSsmPaths.${self:provider.stage}.userTableName}}}'
-WORKFLOW_EVENT_BUS_NAME: workflow-service-bus-${self:provider.stage}
+WORKFLOW_EVENT_BUS_NAME: '{{resolve:ssm:${self:custom.naming.ssmPrefix}/EVENT_BUS_NAME}}'
 WORKFLOW_EVENT_SOURCE: workflow-service
 WORKFLOW_OUTBOX_RELAY_BATCH_SIZE: '10'
 WORKFLOW_OUTBOX_POST_PUBLISH_MODE: markPublished

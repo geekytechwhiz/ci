@@ -25,7 +25,8 @@ provider:
     Stack: data
 
 custom:
-  tableName: workflow-dev-db
+  naming: ${file(../config/naming.yml)}
+  tableName: ${self:custom.naming.tableName}
 
 resources:
   - ${file(./resources/data.yml)}

@@ -99,8 +99,8 @@ finish() {
       log "No Data stack and no expected table. Deploy-Data may perform a CloudFormation create."
       ;;
     RECOVERY_REQUIRED)
-      log "Data stack is missing but the expected DynamoDB table still exists."
-      log "Normal CREATE is blocked. Do not delete, recreate, or import the table in this stage."
+      log "Normal CloudFormation CREATE/UPDATE is blocked."
+      log "Existing physical data must be imported; do not delete or recreate ${DATA_TABLE_NAME}."
       log "Deploy-Data will prepare an IMPORT-only change set for ${DATA_LOGICAL_ID} and wait for manual approval."
       ;;
     STOP)
@@ -132,6 +132,31 @@ stack_is_usable() {
 stack_is_in_progress() {
   case "$1" in
     *_IN_PROGRESS|REVIEW_IN_PROGRESS)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Rollback itself failed. Never CREATE/UPDATE/IMPORT; operator must repair CFN first.
+stack_is_rollback_failed() {
+  case "$1" in
+    ROLLBACK_FAILED|UPDATE_ROLLBACK_FAILED|IMPORT_ROLLBACK_FAILED|DELETE_FAILED)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Failed terminal states where the stack name is occupied but cannot be updated.
+# Physical retained resources may still exist and require IMPORT after stack cleanup.
+stack_is_failed_reimport_candidate() {
+  case "$1" in
+    ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
       return 0
       ;;
     *)
@@ -833,7 +858,73 @@ if [ "${DATA_STACK_STATE}" = "EXISTS" ]; then
       DATA_ACTION="UPDATE"
       DATA_TABLE_OWNERSHIP="NOT_APPLICABLE"
       DATA_TABLE_CONFIGURATION="NOT_APPLICABLE"
-      log "Stack is usable and ${DATA_LOGICAL_ID} is the expected managed DynamoDB table."
+      log "Stack is usable (${DATA_STACK_STATUS}). Deploy-Data may UPDATE."
+    fi
+    finish
+    exit 0
+  fi
+
+  if [ "${DATA_STACK_STATUS}" = "REVIEW_IN_PROGRESS" ]; then
+    DATA_ACTION="RECOVERY_REQUIRED"
+    DATA_STOP_REASON=""
+    log "Stack is REVIEW_IN_PROGRESS (IMPORT change set pending execution)."
+    log "Treating as RECOVERY_REQUIRED so prepare can reuse the pending IMPORT change set."
+    finish
+    exit 0
+  fi
+
+  if stack_is_in_progress "${DATA_STACK_STATUS}"; then
+    DATA_ACTION="STOP"
+    DATA_STOP_REASON="STACK_IN_PROGRESS"
+    DATA_TABLE_STATE="NOT_CHECKED"
+    log "ERROR: Data stack ${DATA_STACK_NAME} is in progress (${DATA_STACK_STATUS})."
+    log "ERROR: Deployment is stopped to avoid racing an in-flight CloudFormation operation."
+    print_cfn_failure_diagnostics "${DATA_STACK_NAME}"
+    finish
+    exit 0
+  fi
+
+  if stack_is_rollback_failed "${DATA_STACK_STATUS}"; then
+    DATA_ACTION="STOP"
+    DATA_STOP_REASON="STACK_ROLLBACK_FAILED"
+    DATA_TABLE_STATE="NOT_CHECKED"
+    log "ERROR: Data stack ${DATA_STACK_NAME} is ${DATA_STACK_STATUS}."
+    log "ERROR: ROLLBACK_FAILED / UPDATE_ROLLBACK_FAILED are not CREATE, UPDATE, or IMPORT."
+    log "ERROR: ContinueUpdateRollback is not executed automatically. Physical resources were not deleted."
+    print_cfn_failure_diagnostics "${DATA_STACK_NAME}"
+    finish
+    exit 0
+  fi
+
+  if stack_is_failed_reimport_candidate "${DATA_STACK_STATUS}"; then
+    log "Stack ${DATA_STACK_NAME} is ${DATA_STACK_STATUS} and cannot be updated."
+    log "Checking whether the expected table still exists and must be imported."
+    print_cfn_failure_diagnostics "${DATA_STACK_NAME}"
+    if ! describe_workflow_table; then
+      DATA_ACTION="STOP"
+      finish
+      exit 0
+    fi
+    if [ "${DATA_TABLE_STATE}" = "NOT_FOUND" ]; then
+      DATA_ACTION="STOP"
+      DATA_STOP_REASON="STACK_UNSAFE"
+      log "ERROR: Stack name is occupied (${DATA_STACK_STATUS}) and table ${DATA_TABLE_NAME} is missing."
+      log "ERROR: Refusing CREATE (would race the failed stack) and refusing UPDATE."
+      finish
+      exit 0
+    fi
+    validate_table_ownership
+    validate_table_configuration
+    if [ "${DATA_TABLE_OWNERSHIP}" != "VERIFIED" ]; then
+      DATA_ACTION="STOP"
+      DATA_STOP_REASON="OWNERSHIP_UNVERIFIED"
+    elif [ "${DATA_TABLE_CONFIGURATION}" != "COMPATIBLE" ]; then
+      DATA_ACTION="STOP"
+      DATA_STOP_REASON="${DATA_STOP_REASON:-INCOMPATIBLE_CONFIGURATION}"
+    else
+      DATA_ACTION="RECOVERY_REQUIRED"
+      DATA_STOP_REASON=""
+      log "Failed stack plus verified existing table → IMPORT recovery. No CREATE/UPDATE."
     fi
     finish
     exit 0
@@ -841,31 +932,11 @@ if [ "${DATA_STACK_STATE}" = "EXISTS" ]; then
 
   DATA_ACTION="STOP"
   DATA_TABLE_STATE="NOT_CHECKED"
-
-  case "${DATA_STACK_STATUS}" in
-    REVIEW_IN_PROGRESS)
-      DATA_STOP_REASON="STACK_UNSAFE"
-      log "ERROR: Data stack ${DATA_STACK_NAME} is in REVIEW_IN_PROGRESS."
-      log "ERROR: REVIEW_IN_PROGRESS is not considered a usable or recoverable deployment state."
-      log "ERROR: The stack may represent an incomplete CloudFormation create/review operation."
-      log "ERROR: Deployment is stopped. No CREATE, UPDATE, IMPORT, or rollback will be executed automatically."
-      ;;
-
-    *_IN_PROGRESS)
-      DATA_STOP_REASON="STACK_IN_PROGRESS"
-      log "ERROR: Data stack ${DATA_STACK_NAME} is in progress (${DATA_STACK_STATUS})."
-      log "ERROR: Deployment is stopped to avoid racing an in-flight CloudFormation operation."
-      log "ERROR: ContinueUpdateRollback is not executed automatically."
-      ;;
-
-    *)
-      DATA_STOP_REASON="STACK_UNSAFE"
-      log "ERROR: Data stack ${DATA_STACK_NAME} is not in a usable state (${DATA_STACK_STATUS})."
-      log "ERROR: Usable states are CREATE_COMPLETE, UPDATE_COMPLETE, IMPORT_COMPLETE, UPDATE_ROLLBACK_COMPLETE."
-      log "ERROR: Failed or rolled-back stacks are not treated as healthy. Deployment is stopped."
-      ;;
-  esac
-
+  DATA_STOP_REASON="STACK_UNSAFE"
+  log "ERROR: Data stack ${DATA_STACK_NAME} is not in a usable state (${DATA_STACK_STATUS})."
+  log "ERROR: Usable UPDATE states are CREATE_COMPLETE, UPDATE_COMPLETE, IMPORT_COMPLETE, UPDATE_ROLLBACK_COMPLETE."
+  log "ERROR: Failed stacks are not treated as healthy. No CREATE/UPDATE."
+  print_cfn_failure_diagnostics "${DATA_STACK_NAME}"
   finish
   exit 0
 fi

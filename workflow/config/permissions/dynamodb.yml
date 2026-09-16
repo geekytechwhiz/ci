@@ -9,5 +9,5 @@ Action:
   - dynamodb:TransactWriteItems
   - dynamodb:DescribeTable
 Resource:
-  - '{{resolve:ssm:/${self:provider.stage}/workflow-service/TABLE_ARN}}'
-  - '{{resolve:ssm:/${self:provider.stage}/workflow-service/TABLE_ARN}}/index/*'
+  - '{{resolve:ssm:${self:custom.naming.ssmPrefix}/TABLE_ARN}}'
+  - '{{resolve:ssm:${self:custom.naming.ssmPrefix}/TABLE_ARN}}/index/*'

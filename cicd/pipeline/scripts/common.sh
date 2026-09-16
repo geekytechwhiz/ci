@@ -532,6 +532,55 @@ assume_data_recovery_role_if_configured() {
   export DATA_RECOVERY_ROLE_ASSUMED=1
 }
 
+# Print CloudFormation failure reasons into CodeBuild logs.
+# Prefers describe-events --filters FailedEvents=true; falls back to stack events.
+print_cfn_failure_diagnostics() {
+  local stack="${1:-}"
+  local region="${AWS_REGION:-}"
+
+  if [ -z "$stack" ]; then
+    echo "[CFN-DIAG] No stack name supplied; skipping CloudFormation diagnostics."
+    return 0
+  fi
+
+  echo "======================================="
+  echo "[CFN-DIAG] CloudFormation failure diagnostics"
+  echo "[CFN-DIAG] stack=${stack} region=${region:-<default>}"
+  echo "======================================="
+
+  echo "[CFN-DIAG] describe-stacks:"
+  aws cloudformation describe-stacks \
+    ${region:+--region "$region"} \
+    --stack-name "$stack" \
+    --output json 2>&1 | head -c 20000 || true
+  echo
+
+  echo "[CFN-DIAG] failed events (describe-events):"
+  if aws cloudformation describe-events \
+    ${region:+--region "$region"} \
+    --stack-name "$stack" \
+    --filters FailedEvents=true \
+    --output json >/tmp/cfn-failed-events.json 2>/tmp/cfn-failed-events.err; then
+    cat /tmp/cfn-failed-events.json
+  else
+    echo "[CFN-DIAG] describe-events failed; falling back to describe-stack-events."
+    cat /tmp/cfn-failed-events.err || true
+    aws cloudformation describe-stack-events \
+      ${region:+--region "$region"} \
+      --stack-name "$stack" \
+      --output json 2>&1 | head -c 40000 || true
+  fi
+  echo
+
+  echo "[CFN-DIAG] recent stack events:"
+  aws cloudformation describe-stack-events \
+    ${region:+--region "$region"} \
+    --stack-name "$stack" \
+    --query 'StackEvents[0:25].[Timestamp,ResourceStatus,LogicalResourceId,ResourceType,ResourceStatusReason]' \
+    --output table 2>&1 || true
+  echo "======================================="
+}
+
 # Normalize ENABLE_* / DEPLOY_* to true|false.
 normalize_bool() {
   case "${1:-}" in

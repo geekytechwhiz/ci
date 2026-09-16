@@ -43,12 +43,12 @@ case "$LAYER" in
     ;;
   infra)
     STACK="${INFRA_STACK_NAME}"
-    TEMPLATE="${INFRA_PACKAGED_TEMPLATE:-infrastructure/packaged.yaml}"
+    TEMPLATE="${INFRA_PACKAGED_TEMPLATE:-infra/packaged.yaml}"
     TAG_STACK=infrastructure
     ;;
   app)
     STACK="${APP_STACK_NAME}"
-    TEMPLATE="${PACKAGED_TEMPLATE:-packaged.yaml}"
+    TEMPLATE="${PACKAGED_TEMPLATE:-app/packaged.yaml}"
     TAG_STACK=application
     ;;
 esac
@@ -89,6 +89,15 @@ if [ "$LAYER" = "app" ] && aws cloudformation describe-stacks --region "$AWS_REG
   fi
 fi
 
+cfn_deploy_failed() {
+  local rc=$?
+  echo "ERROR: CloudFormation deploy failed for ${STACK} (layer=${LAYER}, exit=${rc})"
+  print_cfn_failure_diagnostics "$STACK"
+  exit "$rc"
+}
+
+trap cfn_deploy_failed ERR
+
 # shellcheck disable=SC2046
 aws cloudformation deploy \
   --region "$AWS_REGION" \
@@ -104,6 +113,8 @@ aws cloudformation deploy \
     "Stage=${STAGE}" \
     "ManagedBy=serverless" \
     "Stack=${TAG_STACK}"
+
+trap - ERR
 
 echo "======================================="
 echo "CLOUDFORMATION DEPLOY (${LAYER}) COMPLETED"

@@ -23,6 +23,9 @@ data:
     Purpose: WorkflowTable
     ManagedBy: serverless
 
+naming:
+  resourceNamePrefix: nvdev-use1-mvx
+
 features:
   dynamodb: true
   sqs: true
@@ -37,6 +40,8 @@ ssm:
     - STREAM_ARN
     - SQS_QUEUE_URL
     - SQS_QUEUE_ARN
+    - EVENT_BUS_NAME
+    - EVENT_BUS_ARN
 
 application:
   healthCheckPath: /health

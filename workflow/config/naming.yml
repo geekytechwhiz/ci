@@ -1,0 +1,16 @@
+# Environment-mandated physical/SSM naming for this service.
+# Generic CI/CD reads equivalent values from cicd/config/services/<service>/<stage>.yaml.
+resourceNamePrefix: nvdev-use1-mvx
+ssmPrefix: /nvdev-use1-mvx/workflow-service
+
+# Existing retained DynamoDB table. TableName is an identity field:
+# changing it would replace the table. Import/recovery requires an exact match.
+tableName: workflow-dev-db
+
+queueName: nvdev-use1-mvx-workflow-service-events
+eventBusName: nvdev-use1-mvx-workflow-service-bus
+eventRuleName: nvdev-use1-mvx-workflow-service-to-sqs
+lambdaApiName: nvdev-use1-mvx-workflow-service-api
+lambdaEventsName: nvdev-use1-mvx-workflow-service-events
+apiName: nvdev-use1-mvx-workflow-service
+lambdaRoleName: nvdev-use1-mvx-workflow-service-lambda

@@ -101,6 +101,13 @@
           },
           "additionalProperties": false
         },
+        "naming": {
+          "type": "object",
+          "properties": {
+            "resourceNamePrefix": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
         "features": {
           "type": "object",
           "properties": {
