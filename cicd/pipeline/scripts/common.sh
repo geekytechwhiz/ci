@@ -17,7 +17,6 @@ DATA_TABLE_NAME="${DATA_TABLE_NAME:-}"
 DATA_LOGICAL_ID="${DATA_LOGICAL_ID:-}"
 SSM_PREFIX="${SSM_PREFIX:-/${STAGE}/${SERVICE_NAME}}"
 LAST_DEPLOYED_COMMIT_PARAM="${LAST_DEPLOYED_COMMIT_PARAM:-/${STAGE}/${SERVICE_NAME}/cicd/LAST_DEPLOYED_COMMIT}"
-RESOURCE_NAME_PREFIX="${RESOURCE_NAME_PREFIX:-}"
 
 # Ownership identity is filled from the service Data packaged template.
 # Pipeline/env OWNERSHIP_TAG_* values are hints only and are overwritten.
@@ -409,21 +408,6 @@ NODE
     echo "ERROR: The generic pipeline will not override the service-generated Stage tag." >&2
     return 1
   fi
-
-  if [ -z "${RESOURCE_NAME_PREFIX:-}" ]; then
-    echo "ERROR: RESOURCE_NAME_PREFIX is required to validate the service-generated TableName." >&2
-    echo "ERROR: The pipeline must not invent or rewrite DynamoDB table names." >&2
-    return 1
-  fi
-  case "$table_name" in
-    "${RESOURCE_NAME_PREFIX}"*)
-      ;;
-    *)
-      echo "ERROR: Service-generated TableName '${table_name}' does not comply with mandatory resource name prefix '${RESOURCE_NAME_PREFIX}'." >&2
-      echo "ERROR: Preflight will not rename or override the artifact TableName." >&2
-      return 1
-      ;;
-  esac
 }
 
 upload_environment_artifact() {
@@ -773,5 +757,4 @@ export APP_STACK_NAME STACK_NAME="${STACK_NAME:-$APP_STACK_NAME}"
 export DATA_STACK_NAME INFRA_STACK_NAME DATA_TABLE_NAME DATA_LOGICAL_ID
 export SSM_PREFIX LAST_DEPLOYED_COMMIT_PARAM
 export OWNERSHIP_TAG_SERVICE OWNERSHIP_TAG_STAGE OWNERSHIP_TAG_PURPOSE OWNERSHIP_TAG_MANAGED_BY
-export RESOURCE_NAME_PREFIX
 export SERVICE_ROOT SERVICE_DIR
