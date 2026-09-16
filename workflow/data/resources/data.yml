@@ -7,7 +7,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      TableName: ${self:custom.tableName}
+      TableName: nvdev-use1-mvx-workflow-service-db
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: pk

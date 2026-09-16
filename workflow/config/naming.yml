@@ -7,7 +7,7 @@ ssmPrefix: /nvdev-use1-mvx/workflow-service
 # field: changing it replaces (or orphans) the table. Import/recovery requires
 # an exact match with the live physical name. Do not derive this from
 # resourceNamePrefix — the service configures the name explicitly.
-tableName: workflow-service-db
+tableName: nvdev-use1-mvx-workflow-service-db
 
 queueName: nvdev-use1-mvx-workflow-service-events
 eventBusName: nvdev-use1-mvx-workflow-service-bus
