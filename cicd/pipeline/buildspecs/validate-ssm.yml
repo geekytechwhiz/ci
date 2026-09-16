@@ -2,6 +2,9 @@ version: 0.2
 # Reference buildspec: Validate-SSM
 # Pipeline PrimarySource is SourceArtifact (not BuildArtifact). This stage
 # only reads SSM and does not produce OutputArtifacts.
+# Inline CloudFormation BuildSpec must stay in sync with this file.
+# Framework comes from the SourceArtifact repository path FRAMEWORK_PATH
+# (cicd/pipeline). S3 latest/pipeline.tgz is not used.
 
 env:
   shell: bash
@@ -12,8 +15,19 @@ phases:
       - |
         set -euo pipefail
         FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+        if [ ! -f "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh" ]; then
+          echo "[SSM] ERROR repository framework not found at ${FRAMEWORK_PATH}"
+          echo "[SSM] Validate-SSM requires cicd/pipeline from SourceArtifact."
+          echo "[SSM] S3 latest fallback is disabled for this stage."
+          exit 1
+        fi
         source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
-        echo "STAGE=${STAGE:?} SERVICE_NAME=${SERVICE_NAME:?}"
+        echo "[SSM] Framework: ${CICD_FRAMEWORK_DIR}"
+        echo "[SSM] ENABLE_SSM_VALIDATION=${ENABLE_SSM_VALIDATION:-unset}"
+        echo "[SSM] AWS_REGION=${AWS_REGION:-unset}"
+        echo "[SSM] SSM_PREFIX=${SSM_PREFIX:-unset}"
+        echo "[SSM] REQUIRED_SSM_PARAMETERS=${REQUIRED_SSM_PARAMETERS:-unset}"
+        echo "[SSM] SERVICE_NAME=${SERVICE_NAME:-unset} STAGE=${STAGE:-unset}"
 
   build:
     commands:
@@ -21,4 +35,4 @@ phases:
 
   post_build:
     commands:
-      - echo "SSM validation finished"
+      - echo "[SSM] Validate-SSM finished"

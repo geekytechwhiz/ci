@@ -16,6 +16,7 @@
     "RegionShortCode": "use1",
     "SsmPrefix": "/nvdev-use1-mvx/workflow-service",
     "RequiredSsmParameters": "TABLE_NAME,TABLE_ARN,STREAM_ARN,SQS_QUEUE_URL,SQS_QUEUE_ARN,EVENT_BUS_NAME,EVENT_BUS_ARN",
+    "EnableSsmValidation": "true",
     "EnableData": "true",
     "EnableInfra": "true",
     "EnableApp": "true",

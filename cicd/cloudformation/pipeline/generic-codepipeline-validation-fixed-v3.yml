@@ -61,6 +61,7 @@ Metadata:
       - Label:
           default: Optional contracts
         Parameters:
+          - EnableSsmValidation
           - RequiredSsmParameters
           - OwnershipTagService
           - OwnershipTagPurpose
@@ -123,10 +124,23 @@ Parameters:
     Default: ci
 
 
+  EnableSsmValidation:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      When true, Validate-SSM checks the service SSM contract. Requires
+      SsmPrefix and RequiredSsmParameters. When false, Validate-SSM skips
+      intentionally and does not treat omitted configuration as success.
+
   RequiredSsmParameters:
     Type: String
     Default: ''
-    Description: Comma-separated list of required SSM parameter leaf names under SSM_PREFIX (e.g. TABLE_NAME,TABLE_ARN).
+    AllowedPattern: '^$|^[A-Za-z0-9_.-]+([ \t]*,[ \t]*[A-Za-z0-9_.-]+)*[ \t,]*$'
+    ConstraintDescription: Comma-separated SSM leaf names (example TABLE_NAME,TABLE_ARN,STREAM_ARN). Full paths are not allowed.
+    Description: >
+      Comma-separated leaf names under SsmPrefix (example TABLE_NAME,TABLE_ARN,STREAM_ARN).
+      Do not include the prefix. Required when EnableSsmValidation is true.
 
   ArtifactBucketName:
     Type: String
@@ -239,11 +253,14 @@ Parameters:
   SsmPrefix:
     Type: String
     Default: ''
+    AllowedPattern: '^$|^/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$'
+    ConstraintDescription: Empty, or a hierarchical SSM prefix with a leading slash and no trailing slash.
     Description: >
-      Service SSM contract prefix including the leading slash
-      (example /nvdev-use1-mvx/my-service). Empty uses
-      /{ResourceNamePrefix}/{ServiceName}. Do not use /{Stage}/{ServiceName}
-      unless that is the real contract path.
+      Authoritative service SSM contract prefix including the leading slash
+      (example /nvdev-use1-mvx/my-service). Required when EnableSsmValidation
+      is true. Empty does not invent /{Stage}/{ServiceName} or
+      /{ResourceNamePrefix}/{ServiceName}; pipeline identity is not the
+      application SSM contract.
 
   ResourceNamePrefix:
     Type: String
@@ -380,6 +397,23 @@ Conditions:
       - Fn::Equals:
           - Ref: DataLogicalId
           - ''
+
+Rules:
+  SsmValidationContract:
+    RuleCondition: !Equals
+      - !Ref EnableSsmValidation
+      - 'true'
+    Assertions:
+      - Assert: !Not
+          - !Equals
+            - !Ref SsmPrefix
+            - ''
+        AssertDescription: SsmPrefix is required when EnableSsmValidation is true. Provide the service SSM contract prefix (example /nvdev-use1-mvx/my-service).
+      - Assert: !Not
+          - !Equals
+            - !Ref RequiredSsmParameters
+            - ''
+        AssertDescription: RequiredSsmParameters is required when EnableSsmValidation is true. Provide comma-separated leaf names (example TABLE_NAME,TABLE_ARN,STREAM_ARN).
 
 Resources:
   PipelineRole:
@@ -1760,30 +1794,15 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
-              - Effect: Allow
+              - Sid: ReadServiceSsmContract
+                Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
-                Resource:
-                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
-                  - !If
-                    - HasSsmPrefix
-                    - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/*'
-                    - !Ref AWS::NoValue
-                  - !If
-                    - HasResolvedResourceNamePrefix
-                    - !Sub
-                      - 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefix}/${ServiceName}/*'
-                      - Prefix: !If
-                          - HasResourceNamePrefix
-                          - !Ref ResourceNamePrefix
-                          - !If
-                            - HasRegionShortCode
-                            - !Sub '${PlatformCode}${Stage}-${RegionShortCode}-${ProjectCode}'
-                            - !Sub
-                              - '${PlatformCode}${Stage}-${RegionShort}-${ProjectCode}'
-                              - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
-                    - !Ref AWS::NoValue
+                Resource: !If
+                  - HasSsmPrefix
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/*'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/cicd/validate-ssm-disabled'
               - Effect: Allow
                 Action:
                   - s3:GetObject
@@ -2076,17 +2095,7 @@ Resources:
             Value: !If
               - HasSsmPrefix
               - !Ref SsmPrefix
-              - !Sub
-                - '/${Prefix}/${ServiceName}'
-                - Prefix: !If
-                    - HasResourceNamePrefix
-                    - !Ref ResourceNamePrefix
-                    - !If
-                      - HasRegionShortCode
-                      - !Sub '${PlatformCode}${Stage}-${RegionShortCode}-${ProjectCode}'
-                      - !Sub
-                        - '${PlatformCode}${Stage}-${RegionShort}-${ProjectCode}'
-                        - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
+              - ''
           - Name: LAST_DEPLOYED_COMMIT_PARAM
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
@@ -2217,17 +2226,7 @@ Resources:
             Value: !If
               - HasSsmPrefix
               - !Ref SsmPrefix
-              - !Sub
-                - '/${Prefix}/${ServiceName}'
-                - Prefix: !If
-                    - HasResourceNamePrefix
-                    - !Ref ResourceNamePrefix
-                    - !If
-                      - HasRegionShortCode
-                      - !Sub '${PlatformCode}${Stage}-${RegionShortCode}-${ProjectCode}'
-                      - !Sub
-                        - '${PlatformCode}${Stage}-${RegionShort}-${ProjectCode}'
-                        - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
+              - ''
           - Name: LAST_DEPLOYED_COMMIT_PARAM
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
@@ -2366,17 +2365,7 @@ Resources:
             Value: !If
               - HasSsmPrefix
               - !Ref SsmPrefix
-              - !Sub
-                - '/${Prefix}/${ServiceName}'
-                - Prefix: !If
-                    - HasResourceNamePrefix
-                    - !Ref ResourceNamePrefix
-                    - !If
-                      - HasRegionShortCode
-                      - !Sub '${PlatformCode}${Stage}-${RegionShortCode}-${ProjectCode}'
-                      - !Sub
-                        - '${PlatformCode}${Stage}-${RegionShort}-${ProjectCode}'
-                        - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
+              - ''
           - Name: LAST_DEPLOYED_COMMIT_PARAM
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
@@ -2499,17 +2488,7 @@ Resources:
             Value: !If
               - HasSsmPrefix
               - !Ref SsmPrefix
-              - !Sub
-                - '/${Prefix}/${ServiceName}'
-                - Prefix: !If
-                    - HasResourceNamePrefix
-                    - !Ref ResourceNamePrefix
-                    - !If
-                      - HasRegionShortCode
-                      - !Sub '${PlatformCode}${Stage}-${RegionShortCode}-${ProjectCode}'
-                      - !Sub
-                        - '${PlatformCode}${Stage}-${RegionShort}-${ProjectCode}'
-                        - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
+              - ''
           - Name: LAST_DEPLOYED_COMMIT_PARAM
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
@@ -2614,17 +2593,7 @@ Resources:
             Value: !If
               - HasSsmPrefix
               - !Ref SsmPrefix
-              - !Sub
-                - '/${Prefix}/${ServiceName}'
-                - Prefix: !If
-                    - HasResourceNamePrefix
-                    - !Ref ResourceNamePrefix
-                    - !If
-                      - HasRegionShortCode
-                      - !Sub '${PlatformCode}${Stage}-${RegionShortCode}-${ProjectCode}'
-                      - !Sub
-                        - '${PlatformCode}${Stage}-${RegionShort}-${ProjectCode}'
-                        - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
+              - ''
           - Name: LAST_DEPLOYED_COMMIT_PARAM
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
@@ -2677,6 +2646,14 @@ Resources:
 
   ValidateSsmProject:
     Type: AWS::CodeBuild::Project
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Gate Data/Infra SSM contract before Deploy-App. Reads SSM only; does not deploy.
+        must:
+          - keep PrimarySource SourceArtifact so retries work without BuildArtifact
+          - use repository cicd/pipeline framework; do not download S3 latest
+          - require ENABLE_SSM_VALIDATION, SSM_PREFIX, and leaf names; never skip as success
+          - keep IAM scoped to SsmPrefix, not /{Stage}/{ServiceName}
     Properties:
       Name: !Sub '${Stage}-${ServiceName}-validate-ssm'
       Description: Validate Data and Infrastructure SSM contracts after both stacks deploy. Does not deploy.
@@ -2692,25 +2669,35 @@ Resources:
         Type: CODEPIPELINE
       Source:
         Type: CODEPIPELINE
-        BuildSpec: !Sub |
+        BuildSpec: |
           version: 0.2
+          env:
+            shell: bash
           phases:
-            build:
+            pre_build:
               commands:
                 - |
                   set -euo pipefail
-                  if [ -z "${!REQUIRED_SSM_PARAMETERS:-}" ]; then
-                    echo "[SSM] No required parameters configured; validation passed."
-                    exit 0
+                  FRAMEWORK_PATH="${FRAMEWORK_PATH:-cicd/pipeline}"
+                  if [ ! -f "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh" ]; then
+                    echo "[SSM] ERROR repository framework not found at ${FRAMEWORK_PATH}"
+                    echo "[SSM] Validate-SSM requires cicd/pipeline from SourceArtifact."
+                    echo "[SSM] S3 latest fallback is disabled for this stage."
+                    exit 1
                   fi
-                  IFS=',' read -ra NAMES <<< "${!REQUIRED_SSM_PARAMETERS}"
-                  for leaf in "${!NAMES[@]}"; do
-                    leaf="$(echo "$leaf" | xargs)"
-                    [ -z "$leaf" ] && continue
-                    name="${!SSM_PREFIX}/$leaf"
-                    aws ssm get-parameter --name "$name" >/dev/null
-                    echo "[SSM] present: $name"
-                  done
+                  source "${FRAMEWORK_PATH}/scripts/bootstrap-framework.sh"
+                  echo "[SSM] Framework: ${CICD_FRAMEWORK_DIR}"
+                  echo "[SSM] ENABLE_SSM_VALIDATION=${ENABLE_SSM_VALIDATION:-unset}"
+                  echo "[SSM] AWS_REGION=${AWS_REGION:-unset}"
+                  echo "[SSM] SSM_PREFIX=${SSM_PREFIX:-unset}"
+                  echo "[SSM] REQUIRED_SSM_PARAMETERS=${REQUIRED_SSM_PARAMETERS:-unset}"
+                  echo "[SSM] SERVICE_NAME=${SERVICE_NAME:-unset} STAGE=${STAGE:-unset}"
+            build:
+              commands:
+                - "${CICD_SCRIPTS_DIR}/run-validate-ssm.sh"
+            post_build:
+              commands:
+                - echo "[SSM] Validate-SSM finished"
 
       Environment:
         Type: LINUX_CONTAINER
@@ -2733,28 +2720,27 @@ Resources:
           - Name: CI_PATH
             Type: PLAINTEXT
             Value: !Ref CiPath
+          - Name: FRAMEWORK_PATH
+            Type: PLAINTEXT
+            Value: cicd/pipeline
+          - Name: ENABLE_SSM_VALIDATION
+            Type: PLAINTEXT
+            Value: !Ref EnableSsmValidation
           - Name: SSM_PREFIX
             Type: PLAINTEXT
             Value: !If
               - HasSsmPrefix
               - !Ref SsmPrefix
-              - !Sub
-                - '/${Prefix}/${ServiceName}'
-                - Prefix: !If
-                    - HasResourceNamePrefix
-                    - !Ref ResourceNamePrefix
-                    - !If
-                      - HasRegionShortCode
-                      - !Sub '${PlatformCode}${Stage}-${RegionShortCode}-${ProjectCode}'
-                      - !Sub
-                        - '${PlatformCode}${Stage}-${RegionShort}-${ProjectCode}'
-                        - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
+              - ''
           - Name: LAST_DEPLOYED_COMMIT_PARAM
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
           - Name: REQUIRED_SSM_PARAMETERS
             Type: PLAINTEXT
             Value: !Ref RequiredSsmParameters
+          - Name: DATA_TABLE_NAME
+            Type: PLAINTEXT
+            Value: !Ref DataTableName
           - Name: OWNERSHIP_TAG_SERVICE
             Type: PLAINTEXT
             Value: !If
@@ -2964,17 +2950,7 @@ Resources:
             Value: !If
               - HasSsmPrefix
               - !Ref SsmPrefix
-              - !Sub
-                - '/${Prefix}/${ServiceName}'
-                - Prefix: !If
-                    - HasResourceNamePrefix
-                    - !Ref ResourceNamePrefix
-                    - !If
-                      - HasRegionShortCode
-                      - !Sub '${PlatformCode}${Stage}-${RegionShortCode}-${ProjectCode}'
-                      - !Sub
-                        - '${PlatformCode}${Stage}-${RegionShort}-${ProjectCode}'
-                        - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
+              - ''
           - Name: LAST_DEPLOYED_COMMIT_PARAM
             Type: PLAINTEXT
             Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
@@ -3072,18 +3048,8 @@ Resources:
           DefaultValue: !If
             - HasSsmPrefix
             - !Ref SsmPrefix
-            - !Sub
-              - '/${Prefix}/${ServiceName}'
-              - Prefix: !If
-                  - HasResourceNamePrefix
-                  - !Ref ResourceNamePrefix
-                  - !If
-                    - HasRegionShortCode
-                    - !Sub '${PlatformCode}${Stage}-${RegionShortCode}-${ProjectCode}'
-                    - !Sub
-                      - '${PlatformCode}${Stage}-${RegionShort}-${ProjectCode}'
-                      - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
-          Description: Service SSM contract prefix. CodeBuild SSM_PREFIX.
+            - ''
+          Description: Authoritative service SSM contract prefix from stack parameter SsmPrefix. Empty is not rewritten as /{Stage}/{ServiceName}.
       ArtifactStore:
         Type: S3
         Location: !Ref ArtifactBucketName
@@ -3289,22 +3255,7 @@ Resources:
               Configuration:
                 ProjectName: !Ref ValidateSsmProject
                 PrimarySource: SourceArtifact
-                EnvironmentVariables: !Sub
-                  - '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"SERVICE_NAME","value":"${ServiceName}","type":"PLAINTEXT"},{"name":"REQUIRED_SSM_PARAMETERS","value":"${RequiredSsmParameters}","type":"PLAINTEXT"},{"name":"SSM_PREFIX","value":"${ResolvedSsmPrefix}","type":"PLAINTEXT"},{"name":"RESOURCE_NAME_PREFIX","value":"#{variables.ResourceNamePrefix}","type":"PLAINTEXT"}]'
-                  - ResolvedSsmPrefix: !If
-                      - HasSsmPrefix
-                      - !Ref SsmPrefix
-                      - !Sub
-                        - '/${Prefix}/${ServiceName}'
-                        - Prefix: !If
-                            - HasResourceNamePrefix
-                            - !Ref ResourceNamePrefix
-                            - !If
-                              - HasRegionShortCode
-                              - !Sub '${PlatformCode}${Stage}-${RegionShortCode}-${ProjectCode}'
-                              - !Sub
-                                - '${PlatformCode}${Stage}-${RegionShort}-${ProjectCode}'
-                                - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
+                EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${Stage}","type":"PLAINTEXT"},{"name":"SERVICE_NAME","value":"${ServiceName}","type":"PLAINTEXT"},{"name":"AWS_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},{"name":"ENABLE_SSM_VALIDATION","value":"${EnableSsmValidation}","type":"PLAINTEXT"},{"name":"SSM_PREFIX","value":"#{variables.SsmPrefix}","type":"PLAINTEXT"},{"name":"RESOURCE_NAME_PREFIX","value":"#{variables.ResourceNamePrefix}","type":"PLAINTEXT"}]'
 
         - Name: Deploy-App
           BeforeEntry:
@@ -3378,21 +3329,11 @@ Outputs:
     Description: SSM parameter written by Record-Deployment
     Value: !Sub '/${Stage}/${ServiceName}/cicd/LAST_DEPLOYED_COMMIT'
   SsmPrefix:
-    Description: Service SSM parameter prefix
+    Description: Authoritative service SSM contract prefix from stack parameter SsmPrefix
     Value: !If
       - HasSsmPrefix
       - !Ref SsmPrefix
-      - !Sub
-        - '/${Prefix}/${ServiceName}'
-        - Prefix: !If
-            - HasResourceNamePrefix
-            - !Ref ResourceNamePrefix
-            - !If
-              - HasRegionShortCode
-              - !Sub '${PlatformCode}${Stage}-${RegionShortCode}-${ProjectCode}'
-              - !Sub
-                - '${PlatformCode}${Stage}-${RegionShort}-${ProjectCode}'
-                - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
+      - ''
   ResourceNamePrefix:
     Description: Physical name prefix propagated to CodeBuild as RESOURCE_NAME_PREFIX
     Value: !If
