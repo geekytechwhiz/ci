@@ -78,9 +78,19 @@ if [ "$DATA_ACTION" = "CREATE" ]; then
     echo "ERROR: Refusing CloudFormation create. Re-run data-preflight.sh."
     exit 1
   fi
+  case "${DATA_STACK_STATUS:-}" in
+    ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
+      delete_failed_cfn_stack_record "$DATA_STACK_NAME" "$DATA_STACK_STATUS"
+      ;;
+  esac
 fi
 
 "$SCRIPT_DIR/deploy-cfn.sh" data
+
+if [ -n "${DATA_PACKAGED_TEMPLATE:-}" ]; then
+  PACKAGED_TEMPLATE_PATH="${PACKAGED_TEMPLATE_PATH:-$DATA_PACKAGED_TEMPLATE}"
+fi
+validate_deployed_data_stack "$DATA_STACK_NAME" "${PACKAGED_TEMPLATE_PATH:-$(immutable_packaged_template_local_path data)}"
 
 echo "======================================="
 echo "DATA STACK DEPLOY COMPLETED"

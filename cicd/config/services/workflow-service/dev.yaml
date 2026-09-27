@@ -17,11 +17,6 @@ data:
   enabled: true
   type: dynamodb
   logicalId: WorkflowTable
-  tableName: workflow-dev-db
-  ownershipTags:
-    Service: workflow-service
-    Purpose: WorkflowTable
-    ManagedBy: serverless
 
 features:
   dynamodb: true
@@ -30,19 +25,18 @@ features:
   apiGateway: true
 
 ssm:
-  prefix: /nvdev-use1-mvx/workflow-service
   required:
     - TABLE_NAME
     - TABLE_ARN
     - STREAM_ARN
     - SQS_QUEUE_URL
     - SQS_QUEUE_ARN
+    - EVENT_BUS_NAME
+    - EVENT_BUS_ARN
 
 application:
   healthCheckPath: /health
-  apiBaseUrlParameter: /nvdev-use1-mvx/workflow-service/api-base-url
   healthResponseContains: '"status": "healthy"'
-  smokeTest: required
   buildProjectName: ""
 
 changeDetection:

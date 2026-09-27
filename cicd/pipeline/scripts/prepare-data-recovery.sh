@@ -20,7 +20,6 @@ source "$SCRIPT_DIR/common.sh"
 : "${STAGE:?STAGE must be set (dev, stg, or prd)}"
 : "${ARTIFACT_BUCKET:?ARTIFACT_BUCKET must be set}"
 : "${DATA_STACK_NAME:?DATA_STACK_NAME must be set}"
-: "${DATA_TABLE_NAME:?DATA_TABLE_NAME must be set}"
 
 assert_stage
 assert_codebuild_stage_match
@@ -86,6 +85,11 @@ write_recovery_env() {
     echo "RECOVERY_STATUS=APPROVAL_REQUIRED"
     echo "DATA_STACK_NAME=${DATA_STACK_NAME}"
     echo "DATA_TABLE_NAME=${DATA_TABLE_NAME}"
+    echo "DATA_LOGICAL_ID=${DATA_LOGICAL_ID}"
+    echo "OWNERSHIP_TAG_SERVICE=${OWNERSHIP_TAG_SERVICE}"
+    echo "OWNERSHIP_TAG_STAGE=${OWNERSHIP_TAG_STAGE}"
+    echo "OWNERSHIP_TAG_PURPOSE=${OWNERSHIP_TAG_PURPOSE}"
+    echo "OWNERSHIP_TAG_MANAGED_BY=${OWNERSHIP_TAG_MANAGED_BY}"
     echo "CURRENT_COMMIT=${CURRENT_COMMIT}"
     echo "DATA_ARTIFACT_URI=${DATA_ARTIFACT_URI}"
     echo "CHANGE_SET_NAME=${CHANGE_SET_NAME}"
@@ -141,7 +145,7 @@ fetch_immutable_data_artifact() {
     fail_stop "Cannot resolve immutable Data artifact URI for CURRENT_COMMIT=${CURRENT_COMMIT}."
   fi
 
-  dest="$(mktemp "${WORKDIR}/data-packaged.XXXXXX")"
+  dest="$(immutable_packaged_template_local_path data)"
   log "Fetching immutable Data artifact ${DATA_ARTIFACT_URI}"
   log "CURRENT_COMMIT=${CURRENT_COMMIT}. A local packaged.yaml is ignored."
   set +e
@@ -193,6 +197,19 @@ describe_data_stack_or_fail() {
     log "Data stack state: REVIEW_IN_PROGRESS (IMPORT change set pending execution; retry-safe)"
     return 0
   fi
+
+  case "$status" in
+    ROLLBACK_FAILED|UPDATE_ROLLBACK_FAILED|IMPORT_ROLLBACK_FAILED|DELETE_FAILED)
+      print_cfn_failure_diagnostics "${DATA_STACK_NAME}"
+      fail_stop "Data stack is ${status}. IMPORT cannot run until the failed rollback is repaired. Physical resources were not deleted."
+      ;;
+    ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
+      STACK_EXISTS_STATUS="$status"
+      log "Data stack is ${status} and cannot be updated. Preparing IMPORT requires removing the failed stack record only."
+      log "DeletionPolicy Retain keeps the DynamoDB table. The table will not be deleted."
+      return 0
+      ;;
+  esac
 
   fail_stop "Data stack unexpectedly exists (${status}). Refusing to prepare an IMPORT change set against a live stack."
 }
@@ -368,7 +385,7 @@ validate_table_ownership() {
     EXPECTED_ACCOUNT="$caller_account" \
     EXPECTED_REGION="$AWS_REGION" \
     EXPECTED_SERVICE="$OWNERSHIP_TAG_SERVICE" \
-    EXPECTED_STAGE="$STAGE" \
+    EXPECTED_STAGE="${OWNERSHIP_TAG_STAGE:-$STAGE}" \
     EXPECTED_PURPOSE="$OWNERSHIP_TAG_PURPOSE" \
     EXPECTED_MANAGED_BY="$OWNERSHIP_TAG_MANAGED_BY" \
     TABLE_JSON="${TABLE_JSON}" \
@@ -690,12 +707,21 @@ if (resourceIds.length !== 1 || resourceIds[0] !== logicalId) {
 }
 
 fs.writeFileSync(process.env.DEST_TEMPLATE, JSON.stringify(importTemplate, null, 2) + '\n');
+const artifactTableName = workflowTable.Properties && workflowTable.Properties.TableName;
+if (!artifactTableName || typeof artifactTableName !== 'string') {
+  console.error('[DATA-RECOVERY-PREPARE] ERROR: Data artifact TableName is missing or not a literal string');
+  process.exit(1);
+}
+if (process.env.EXPECTED_TABLE_NAME && process.env.EXPECTED_TABLE_NAME !== artifactTableName) {
+  console.error('[DATA-RECOVERY-PREPARE] ERROR: Env table name ' + process.env.EXPECTED_TABLE_NAME + ' does not match artifact TableName ' + artifactTableName);
+  process.exit(1);
+}
 fs.writeFileSync(process.env.DEST_IMPORT, JSON.stringify([
   {
     ResourceType: 'AWS::DynamoDB::Table',
     LogicalResourceId: logicalId,
     ResourceIdentifier: {
-      TableName: process.env.EXPECTED_TABLE_NAME,
+      TableName: artifactTableName,
     },
   },
 ], null, 2) + '\n');
@@ -713,6 +739,11 @@ write_stop_recovery_env() {
     echo "RECOVERY_STATUS=STOP"
     echo "DATA_STACK_NAME=${DATA_STACK_NAME}"
     echo "DATA_TABLE_NAME=${DATA_TABLE_NAME}"
+    echo "DATA_LOGICAL_ID=${DATA_LOGICAL_ID}"
+    echo "OWNERSHIP_TAG_SERVICE=${OWNERSHIP_TAG_SERVICE}"
+    echo "OWNERSHIP_TAG_STAGE=${OWNERSHIP_TAG_STAGE}"
+    echo "OWNERSHIP_TAG_PURPOSE=${OWNERSHIP_TAG_PURPOSE}"
+    echo "OWNERSHIP_TAG_MANAGED_BY=${OWNERSHIP_TAG_MANAGED_BY}"
     echo "CURRENT_COMMIT=${CURRENT_COMMIT:-}"
     echo "CHANGE_SET_NAME=${CHANGE_SET_NAME}"
     echo "RECOVERY_CHANGE_SET_NAME="
@@ -906,6 +937,10 @@ if [ -n "${DATA_ARTIFACT_COMMIT:-}" ] && [ "${DATA_ARTIFACT_COMMIT}" != "${CURRE
 fi
 
 fetch_immutable_data_artifact
+if ! apply_data_resource_identity_from_template "$PACKAGED_TEMPLATE_PATH"; then
+  fail_stop "Could not read DynamoDB TableName from the service Data artifact."
+fi
+log "table=${DATA_TABLE_NAME} logicalId=${DATA_LOGICAL_ID}"
 describe_data_stack_or_fail
 describe_workflow_table_or_fail
 load_table_tags
@@ -920,6 +955,15 @@ fi
 
 CHANGE_SET_NAME="$(deterministic_recovery_change_set_name)"
 log "IMPORT change set name: ${CHANGE_SET_NAME}"
+
+case "${STACK_EXISTS_STATUS}" in
+  ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
+    log "Removing failed CloudFormation stack record ${DATA_STACK_NAME} (${STACK_EXISTS_STATUS})."
+    log "DeletionPolicy Retain keeps ${DATA_TABLE_NAME}. The table is not deleted or recreated."
+    delete_failed_cfn_stack_record "$DATA_STACK_NAME" "$STACK_EXISTS_STATUS"
+    STACK_EXISTS_STATUS=""
+    ;;
+esac
 
 reused_change_set=0
 if [ "${STACK_EXISTS_STATUS}" = "REVIEW_IN_PROGRESS" ]; then

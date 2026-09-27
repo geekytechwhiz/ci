@@ -12,10 +12,27 @@
 #   UPDATE              Data stack exists, is usable, and CloudFormation still
 #                       manages the expected DynamoDB table physical resource
 #   CREATE              Data stack missing and the expected table is missing
-#   RECOVERY_REQUIRED   Data stack missing, expected table exists, all ownership
-#                       tags verified, configuration compatible (import is NOT run)
+#                       (also: failed stack record + table missing → delete record
+#                       then CREATE; physical tables are never deleted)
+#   RECOVERY_REQUIRED   Data stack missing or failed, expected table exists, all
+#                       ownership tags verified, configuration compatible
+#                       (import is NOT run here)
 #   STOP                Unsafe stack state, resource not managed, unverified
 #                       ownership, missing artifact, or incompatible configuration
+#
+# State machine (stack, table) → action. Physical DynamoDB is never deleted.
+#   1. missing + missing                         → CREATE
+#   2. missing + exists (verified+compatible)    → RECOVERY_REQUIRED
+#   3. CREATE_COMPLETE + exists (managed)        → UPDATE
+#   4. UPDATE_COMPLETE + exists (managed)        → UPDATE
+#   5. ROLLBACK_COMPLETE + missing               → CREATE (delete failed record)
+#   6. ROLLBACK_COMPLETE + exists (verified)     → RECOVERY_REQUIRED
+#   7. CREATE_FAILED + missing                   → CREATE (delete failed record)
+#   8. CREATE_FAILED + exists (verified)         → RECOVERY_REQUIRED
+#   9. UPDATE_ROLLBACK_FAILED + exists           → STOP
+#  10. unrelated existing table (unverified)     → STOP
+# Failed-record delete is only ROLLBACK_COMPLETE|CREATE_FAILED|
+# IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED. Never CREATE_COMPLETE/UPDATE_COMPLETE.
 #
 # Pipeline artifact source of truth (when CURRENT_COMMIT is set):
 #   s3://$ARTIFACT_BUCKET/${SERVICE_NAME}/$CURRENT_COMMIT/data/packaged.yaml
@@ -51,6 +68,7 @@ DATA_ACTION=""
 DATA_STOP_REASON=""
 DATA_ARTIFACT_COMMIT=""
 DATA_ARTIFACT_URI=""
+DATA_ARTIFACT_SHA256=""
 PACKAGED_TEMPLATE_PATH=""
 
 log() {
@@ -77,6 +95,14 @@ write_preflight_env() {
     fi
     echo "DATA_ARTIFACT_COMMIT=${DATA_ARTIFACT_COMMIT}"
     echo "DATA_ARTIFACT_URI=${DATA_ARTIFACT_URI}"
+    echo "DATA_PACKAGED_TEMPLATE=${PACKAGED_TEMPLATE_PATH}"
+    echo "DATA_ARTIFACT_SHA256=${DATA_ARTIFACT_SHA256:-}"
+    echo "DATA_TABLE_NAME=${DATA_TABLE_NAME}"
+    echo "DATA_LOGICAL_ID=${DATA_LOGICAL_ID}"
+    echo "OWNERSHIP_TAG_SERVICE=${OWNERSHIP_TAG_SERVICE}"
+    echo "OWNERSHIP_TAG_STAGE=${OWNERSHIP_TAG_STAGE}"
+    echo "OWNERSHIP_TAG_PURPOSE=${OWNERSHIP_TAG_PURPOSE}"
+    echo "OWNERSHIP_TAG_MANAGED_BY=${OWNERSHIP_TAG_MANAGED_BY}"
   } >"$tmp"
   mv "$tmp" "$PREFLIGHT_ENV"
   log "Wrote $PREFLIGHT_ENV"
@@ -90,17 +116,29 @@ finish() {
   fi
   log "Artifact commit: ${DATA_ARTIFACT_COMMIT:-<none>}"
   log "Artifact URI: ${DATA_ARTIFACT_URI:-<none>}"
+  log "Expected TableName from packaged.yaml: ${DATA_TABLE_NAME:-<unset>}"
+  log "Expected logical ID from packaged.yaml: ${DATA_LOGICAL_ID:-<unset>}"
+  log "Expected tags from packaged.yaml: Service=${OWNERSHIP_TAG_SERVICE:-<unset>} Stage=${OWNERSHIP_TAG_STAGE:-<unset>} Purpose=${OWNERSHIP_TAG_PURPOSE:-<unset>} ManagedBy=${OWNERSHIP_TAG_MANAGED_BY:-<unset>}"
   case "${DATA_ACTION}" in
     UPDATE)
       log "Data stack is usable and CloudFormation manages the expected DynamoDB table."
       log "Deploy-Data may perform a CloudFormation update of the validated artifact."
       ;;
     CREATE)
-      log "No Data stack and no expected table. Deploy-Data may perform a CloudFormation create."
+      case "${DATA_STACK_STATUS:-}" in
+        ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
+          log "Failed stack ${DATA_STACK_NAME} is ${DATA_STACK_STATUS} and the expected table is missing."
+          log "Deploy-Data may delete the failed stack record only, then CREATE from the immutable artifact."
+          log "Existing physical DynamoDB tables will not be deleted or recreated."
+          ;;
+        *)
+          log "No Data stack and no expected table. Deploy-Data may perform a CloudFormation create."
+          ;;
+      esac
       ;;
     RECOVERY_REQUIRED)
-      log "Data stack is missing but the expected DynamoDB table still exists."
-      log "Normal CREATE is blocked. Do not delete, recreate, or import the table in this stage."
+      log "Normal CloudFormation CREATE/UPDATE is blocked."
+      log "Existing physical data must be imported; do not delete or recreate ${DATA_TABLE_NAME}."
       log "Deploy-Data will prepare an IMPORT-only change set for ${DATA_LOGICAL_ID} and wait for manual approval."
       ;;
     STOP)
@@ -118,27 +156,10 @@ aws_json() {
   aws "$@" --output json
 }
 
-stack_is_usable() {
-  case "$1" in
-    CREATE_COMPLETE|UPDATE_COMPLETE|IMPORT_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-stack_is_in_progress() {
-  case "$1" in
-    *_IN_PROGRESS|REVIEW_IN_PROGRESS)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
+stack_is_usable() { data_stack_is_usable "$1"; }
+stack_is_in_progress() { data_stack_is_in_progress "$1"; }
+stack_is_rollback_failed() { data_stack_is_rollback_failed "$1"; }
+stack_is_failed_reimport_candidate() { data_stack_is_failed_reimport_candidate "$1"; }
 
 resource_is_healthy() {
   stack_is_usable "$1"
@@ -162,9 +183,10 @@ resolve_packaged_data_template() {
       DATA_ARTIFACT_URI=""
       return 1
     fi
-    dest="$(mktemp "${TMPDIR:-/tmp}/data-packaged.XXXXXX.yaml")"
+    dest="$(immutable_packaged_template_local_path data)"
     log "Validating against immutable Data artifact ${DATA_ARTIFACT_URI}"
     log "CURRENT_COMMIT=${CURRENT_COMMIT}. A local packaged.yaml is ignored."
+    log "Pinned local artifact path: ${dest}"
     set +e
     fetch_immutable_packaged_template data "$dest"
     rc=$?
@@ -176,6 +198,8 @@ resolve_packaged_data_template() {
       return 1
     fi
     PACKAGED_TEMPLATE_PATH="$dest"
+    DATA_ARTIFACT_SHA256="$(sha256_file "$dest")"
+    log "Immutable Data artifact sha256=${DATA_ARTIFACT_SHA256}"
     return 0
   fi
 
@@ -187,6 +211,7 @@ resolve_packaged_data_template() {
   log "Pipeline Deploy-Data must set CURRENT_COMMIT and use the immutable S3 artifact."
   if [ -f "$dest" ]; then
     PACKAGED_TEMPLATE_PATH="$dest"
+    DATA_ARTIFACT_SHA256="$(sha256_file "$dest")"
   else
     PACKAGED_TEMPLATE_PATH=""
     log "Local Data template was not found at ${dest}."
@@ -263,11 +288,12 @@ dynamodb_error_is_not_found() {
   return 1
 }
 
-describe_workflow_table() {
+describe_data_table() {
   local output rc=0
   log "Checking DynamoDB resource"
-  log "Expected table: ${DATA_TABLE_NAME}"
-  log "Expected account/region/service/environment come from the live caller identity and STAGE=${STAGE}"
+  log "Expected table from packaged.yaml: ${DATA_TABLE_NAME}"
+  log "Expected identity tags from packaged.yaml: Service=${OWNERSHIP_TAG_SERVICE} Stage=${OWNERSHIP_TAG_STAGE} Purpose=${OWNERSHIP_TAG_PURPOSE} ManagedBy=${OWNERSHIP_TAG_MANAGED_BY}"
+  log "Expected account/region come from the live caller identity; expected Stage tag must match STAGE=${STAGE}"
 
   set +e
   output="$(aws dynamodb describe-table \
@@ -313,7 +339,7 @@ describe_workflow_table() {
 
 # When the Data stack exists, UPDATE is allowed only if CloudFormation still
 # manages logical ID ${DATA_LOGICAL_ID} and the physical resource is the expected table.
-validate_managed_workflow_table() {
+validate_managed_data_table() {
   local output rc=0
   local resource_type resource_status physical_id logical_id
 
@@ -398,7 +424,7 @@ validate_managed_workflow_table() {
     return 1
   fi
 
-  if ! describe_workflow_table; then
+  if ! describe_data_table; then
     return 1
   fi
 
@@ -473,7 +499,7 @@ validate_table_ownership() {
     EXPECTED_ACCOUNT="$caller_account" \
     EXPECTED_REGION="$AWS_REGION" \
     EXPECTED_SERVICE="$OWNERSHIP_TAG_SERVICE" \
-    EXPECTED_STAGE="$STAGE" \
+    EXPECTED_STAGE="${OWNERSHIP_TAG_STAGE:-$STAGE}" \
     EXPECTED_PURPOSE="$OWNERSHIP_TAG_PURPOSE" \
     EXPECTED_MANAGED_BY="$OWNERSHIP_TAG_MANAGED_BY" \
     TABLE_JSON="${TABLE_JSON}" \
@@ -661,8 +687,8 @@ try {
 }
 
 const resources = template.Resources || {};
-const workflowTable = resources[process.env.EXPECTED_LOGICAL_ID];
-if (!workflowTable || workflowTable.Type !== 'AWS::DynamoDB::Table') {
+const dataTableResource = resources[process.env.EXPECTED_LOGICAL_ID];
+if (!dataTableResource || dataTableResource.Type !== 'AWS::DynamoDB::Table') {
   process.stdout.write(JSON.stringify({
     state: 'INCOMPATIBLE',
     errors: [`Data template is missing AWS::DynamoDB::Table resource ${process.env.EXPECTED_LOGICAL_ID}`],
@@ -670,7 +696,7 @@ if (!workflowTable || workflowTable.Type !== 'AWS::DynamoDB::Table') {
   process.exit(0);
 }
 
-const expected = workflowTable.Properties || {};
+const expected = dataTableResource.Properties || {};
 
 function sortKeySchema(list) {
   return (list || []).map((k) => ({
@@ -805,8 +831,8 @@ NODE
 }
 
 log "Starting Data preflight"
-log "stage=${STAGE} region=${AWS_REGION} service=${OWNERSHIP_TAG_SERVICE}"
-log "stack=${DATA_STACK_NAME} table=${DATA_TABLE_NAME}"
+log "stage=${STAGE} region=${AWS_REGION} stack=${DATA_STACK_NAME}"
+log "Expected DynamoDB identity will be read from data/packaged.yaml (not pipeline DATA_TABLE_NAME or OWNERSHIP_TAG_*)."
 
 TABLE_JSON=""
 TABLE_ARN=""
@@ -820,6 +846,19 @@ if ! resolve_packaged_data_template; then
   exit 0
 fi
 
+if ! apply_data_resource_identity_from_template "$PACKAGED_TEMPLATE_PATH"; then
+  DATA_ACTION="STOP"
+  DATA_STOP_REASON="INCOMPATIBLE_CONFIGURATION"
+  DATA_TABLE_STATE="NOT_CHECKED"
+  log "ERROR: Could not derive a valid DynamoDB identity from the service Data artifact."
+  log "ERROR: Expected values discovered from packaged.yaml: table=${DATA_TABLE_NAME:-<unset>} logicalId=${DATA_LOGICAL_ID:-<unset>} Service=${OWNERSHIP_TAG_SERVICE:-<unset>} Stage=${OWNERSHIP_TAG_STAGE:-<unset>} Purpose=${OWNERSHIP_TAG_PURPOSE:-<unset>} ManagedBy=${OWNERSHIP_TAG_MANAGED_BY:-<unset>}"
+  finish
+  exit 0
+fi
+
+log "Expected table=${DATA_TABLE_NAME} logicalId=${DATA_LOGICAL_ID}"
+log "Expected tags Service=${OWNERSHIP_TAG_SERVICE} Stage=${OWNERSHIP_TAG_STAGE} Purpose=${OWNERSHIP_TAG_PURPOSE} ManagedBy=${OWNERSHIP_TAG_MANAGED_BY}"
+
 if ! describe_data_stack; then
   DATA_ACTION="STOP"
   DATA_TABLE_STATE="NOT_CHECKED"
@@ -829,11 +868,80 @@ fi
 
 if [ "${DATA_STACK_STATE}" = "EXISTS" ]; then
   if stack_is_usable "${DATA_STACK_STATUS}"; then
-    if validate_managed_workflow_table; then
+    if validate_managed_data_table; then
       DATA_ACTION="UPDATE"
       DATA_TABLE_OWNERSHIP="NOT_APPLICABLE"
       DATA_TABLE_CONFIGURATION="NOT_APPLICABLE"
-      log "Stack is usable and ${DATA_LOGICAL_ID} is the expected managed DynamoDB table."
+      log "Stack is usable (${DATA_STACK_STATUS}). Deploy-Data may UPDATE."
+    fi
+    finish
+    exit 0
+  fi
+
+  if [ "${DATA_STACK_STATUS}" = "REVIEW_IN_PROGRESS" ]; then
+    DATA_ACTION="RECOVERY_REQUIRED"
+    DATA_STOP_REASON=""
+    log "Stack is REVIEW_IN_PROGRESS (IMPORT change set pending execution)."
+    log "Treating as RECOVERY_REQUIRED so prepare can reuse the pending IMPORT change set."
+    finish
+    exit 0
+  fi
+
+  if stack_is_in_progress "${DATA_STACK_STATUS}"; then
+    DATA_ACTION="STOP"
+    DATA_STOP_REASON="STACK_IN_PROGRESS"
+    DATA_TABLE_STATE="NOT_CHECKED"
+    log "ERROR: Data stack ${DATA_STACK_NAME} is in progress (${DATA_STACK_STATUS})."
+    log "ERROR: Deployment is stopped to avoid racing an in-flight CloudFormation operation."
+    print_cfn_failure_diagnostics "${DATA_STACK_NAME}"
+    finish
+    exit 0
+  fi
+
+  if stack_is_rollback_failed "${DATA_STACK_STATUS}"; then
+    DATA_ACTION="STOP"
+    DATA_STOP_REASON="STACK_ROLLBACK_FAILED"
+    DATA_TABLE_STATE="NOT_CHECKED"
+    log "ERROR: Data stack ${DATA_STACK_NAME} is ${DATA_STACK_STATUS}."
+    log "ERROR: ROLLBACK_FAILED / UPDATE_ROLLBACK_FAILED are not CREATE, UPDATE, or IMPORT."
+    log "ERROR: ContinueUpdateRollback is not executed automatically. Physical resources were not deleted."
+    print_cfn_failure_diagnostics "${DATA_STACK_NAME}"
+    finish
+    exit 0
+  fi
+
+  if stack_is_failed_reimport_candidate "${DATA_STACK_STATUS}"; then
+    log "Stack ${DATA_STACK_NAME} is ${DATA_STACK_STATUS} and cannot be updated."
+    log "Checking whether the expected table still exists and must be imported."
+    print_cfn_failure_diagnostics "${DATA_STACK_NAME}"
+    if ! describe_data_table; then
+      DATA_ACTION="STOP"
+      finish
+      exit 0
+    fi
+    if [ "${DATA_TABLE_STATE}" = "NOT_FOUND" ]; then
+      DATA_ACTION="CREATE"
+      DATA_STOP_REASON=""
+      DATA_TABLE_OWNERSHIP="NOT_APPLICABLE"
+      DATA_TABLE_CONFIGURATION="NOT_APPLICABLE"
+      log "Stack name is occupied (${DATA_STACK_STATUS}) but table ${DATA_TABLE_NAME} is missing."
+      log "Deploy-Data may remove the failed stack record only, then CREATE from the same immutable artifact."
+      log "Refusing UPDATE against ${DATA_STACK_STATUS}. Physical DynamoDB tables will not be deleted."
+      finish
+      exit 0
+    fi
+    validate_table_ownership
+    validate_table_configuration
+    if [ "${DATA_TABLE_OWNERSHIP}" != "VERIFIED" ]; then
+      DATA_ACTION="STOP"
+      DATA_STOP_REASON="OWNERSHIP_UNVERIFIED"
+    elif [ "${DATA_TABLE_CONFIGURATION}" != "COMPATIBLE" ]; then
+      DATA_ACTION="STOP"
+      DATA_STOP_REASON="${DATA_STOP_REASON:-INCOMPATIBLE_CONFIGURATION}"
+    else
+      DATA_ACTION="RECOVERY_REQUIRED"
+      DATA_STOP_REASON=""
+      log "Failed stack plus verified existing table → IMPORT recovery. No CREATE/UPDATE."
     fi
     finish
     exit 0
@@ -841,38 +949,18 @@ if [ "${DATA_STACK_STATE}" = "EXISTS" ]; then
 
   DATA_ACTION="STOP"
   DATA_TABLE_STATE="NOT_CHECKED"
-
-  case "${DATA_STACK_STATUS}" in
-    REVIEW_IN_PROGRESS)
-      DATA_STOP_REASON="STACK_UNSAFE"
-      log "ERROR: Data stack ${DATA_STACK_NAME} is in REVIEW_IN_PROGRESS."
-      log "ERROR: REVIEW_IN_PROGRESS is not considered a usable or recoverable deployment state."
-      log "ERROR: The stack may represent an incomplete CloudFormation create/review operation."
-      log "ERROR: Deployment is stopped. No CREATE, UPDATE, IMPORT, or rollback will be executed automatically."
-      ;;
-
-    *_IN_PROGRESS)
-      DATA_STOP_REASON="STACK_IN_PROGRESS"
-      log "ERROR: Data stack ${DATA_STACK_NAME} is in progress (${DATA_STACK_STATUS})."
-      log "ERROR: Deployment is stopped to avoid racing an in-flight CloudFormation operation."
-      log "ERROR: ContinueUpdateRollback is not executed automatically."
-      ;;
-
-    *)
-      DATA_STOP_REASON="STACK_UNSAFE"
-      log "ERROR: Data stack ${DATA_STACK_NAME} is not in a usable state (${DATA_STACK_STATUS})."
-      log "ERROR: Usable states are CREATE_COMPLETE, UPDATE_COMPLETE, IMPORT_COMPLETE, UPDATE_ROLLBACK_COMPLETE."
-      log "ERROR: Failed or rolled-back stacks are not treated as healthy. Deployment is stopped."
-      ;;
-  esac
-
+  DATA_STOP_REASON="STACK_UNSAFE"
+  log "ERROR: Data stack ${DATA_STACK_NAME} is not in a usable state (${DATA_STACK_STATUS})."
+  log "ERROR: Usable UPDATE states are CREATE_COMPLETE, UPDATE_COMPLETE, IMPORT_COMPLETE, UPDATE_ROLLBACK_COMPLETE."
+  log "ERROR: Failed stacks are not treated as healthy. No CREATE/UPDATE."
+  print_cfn_failure_diagnostics "${DATA_STACK_NAME}"
   finish
   exit 0
 fi
 
 # Stack is NOT_FOUND. Classify the expected DynamoDB table before any
 # ownership or configuration validation. A missing table is CREATE.
-if ! describe_workflow_table; then
+if ! describe_data_table; then
   DATA_ACTION="STOP"
   finish
   exit 0

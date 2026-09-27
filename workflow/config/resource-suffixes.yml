@@ -1,0 +1,12 @@
+# Service-owned physical resource suffixes.
+# Full names are composed at package time:
+#   ${RESOURCE_NAME_PREFIX}-${suffix}
+# Example: nvdev-use1-mvx-workflow-service-db
+tableSuffix: workflow-service-db
+queueSuffix: workflow-service-events
+eventBusSuffix: workflow-service-bus
+eventRuleSuffix: workflow-service-to-sqs
+lambdaApiSuffix: workflow-service-api
+lambdaEventsSuffix: workflow-service-events
+apiSuffix: workflow-service
+lambdaRoleSuffix: workflow-service-lambda

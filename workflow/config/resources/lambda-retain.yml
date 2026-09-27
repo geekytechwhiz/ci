@@ -1,0 +1,10 @@
+extensions:
+  ApiLambdaFunction:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+  EventsLambdaFunction:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+  IamRoleLambdaExecution:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain

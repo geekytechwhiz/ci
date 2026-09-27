@@ -3,4 +3,8 @@ Action:
   - ssm:GetParameter
   - ssm:GetParameters
   - ssm:GetParametersByPath
-Resource: '*'
+Resource:
+  - arn:aws:ssm:${self:provider.region}:*:parameter${self:custom.naming.ssmPrefix}*
+  - arn:aws:ssm:${self:provider.region}:*:parameter${self:custom.naming.ssmPrefix}/*
+  - arn:aws:ssm:${self:provider.region}:*:parameter/mvx/${self:provider.stage}/*
+  - arn:aws:ssm:${self:provider.region}:*:parameter/mvx/${self:provider.stage}/**

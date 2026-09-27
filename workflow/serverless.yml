@@ -1,11 +1,17 @@
+# Application identity. Distinct from pipeline SERVICE_NAME (artifact prefix /
+# CodePipeline project). Physical AWS names come from config/naming.yml.
 service: workflow-service
 
-configValidationMode: warn
+# Fail packaging on schema violations. nodejs22.x is added by
+# ci/plugins/allow-nodejs22-runtime.js because Serverless 3.40.0's bundled
+# schema stops at nodejs20.x.
+configValidationMode: error
 
 frameworkVersion: '3.x'
 
 # Shared plugin set + offline (shared plugins.yml omits offline; keep it for local DX).
 plugins:
+  - ./ci/plugins/allow-nodejs22-runtime.js
   - serverless-esbuild
   - serverless-dotenv-plugin
   - serverless-auto-swagger
@@ -16,10 +22,14 @@ package: ${file(../infra/serverless/package.yml)}
 
 provider:
   name: aws
+  # Lambda runtime. Intentionally Node.js 22 to match CodeBuild (nodejs: 22)
+  # and package.json engines (>=22). Serverless 3.40.0 schema is extended by
+  # ci/plugins/allow-nodejs22-runtime.js. Do not change one without the others.
   runtime: nodejs22.x
-  region: us-east-1
+  region: ${env:AWS_REGION, opt:region, 'us-east-1'}
   stage: ${opt:stage, 'dev'}
-  # Preserve existing CloudFormation stack identity (do not rename to *-app).
+  # Used only by `serverless deploy`. Pipeline CloudFormation stack names use
+  # pipeline SERVICE_NAME: ${STAGE}-${SERVICE_NAME}.
   stackName: ${self:provider.stage}-workflow-service
   versionFunctions: false
 
@@ -33,6 +43,10 @@ provider:
 
   memorySize: 512
   timeout: 30
+  apiName: ${self:custom.naming.apiName}
+  iam:
+    role:
+      name: ${self:custom.naming.lambdaRoleName}
 
   tracing:
     lambda: true
@@ -57,17 +71,27 @@ provider:
     - ${file(../infra/serverless/permissions/xray.yml)}
 
 custom:
+  naming: ${file(./config/naming.yml)}
+  deploymentContext: ${file(./config/deployment-context.yml)}
   sharedSsmPaths: ${file(../infra/serverless/config/shared-ssm-paths.yml)}
   logRetentionByStage: ${file(../infra/serverless/config/log-retention-by-stage.yml)}
   app: ${file(./config/app-custom.yml)}
   apiTitle: Workflow Service API
+  # .env is optional local DX only. CI/CD injects configuration via CodeBuild
+  # environment variables and SSM dynamic references in config/runtime-*.yml.
+  # Do not commit secrets. Missing .env must not warn or fail packaging.
+  dotenv:
+    logging: false
+    include: []
+    required:
+      file: false
 
   resourceRegistry:
     enabled: true
     platformOwner: workflow-service
     parameters:
       WORKFLOW_EVENTS_QUEUE_URL:
-        value: '{{resolve:ssm:/${self:provider.stage}/workflow-service/SQS_QUEUE_URL}}'
+        value: '{{resolve:ssm:${self:custom.naming.ssmPrefix}/SQS_QUEUE_URL}}'
       LAMBDA_LOG_RETENTION_DAYS:
         value: ${self:custom.logRetentionByStage.${self:provider.stage}, '14'}
 
@@ -79,6 +103,7 @@ custom:
 
 functions:
   api:
+    name: ${self:custom.naming.lambdaApiName}
     handler: src/handlers/http.main
     description: HTTP health endpoint for CI/CD pipeline validation
     events:
@@ -91,15 +116,17 @@ functions:
             '200': OK
 
   events:
+    name: ${self:custom.naming.lambdaEventsName}
     handler: src/handlers/events.main
     description: SQS consumer for EventBridge → SQS event flow
     timeout: 30
     memorySize: 256
     events:
       - sqs:
-          arn: '{{resolve:ssm:/${self:provider.stage}/workflow-service/SQS_QUEUE_ARN}}'
+          arn: arn:aws:sqs:${aws:region}:${aws:accountId}:${self:custom.naming.queueName}
           batchSize: 5
           functionResponseType: ReportBatchItemFailures
 
 resources:
   - ${file(./config/resources/gateway-responses.yml)}
+  - ${file(./config/resources/lambda-retain.yml)}

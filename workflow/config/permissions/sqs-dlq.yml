@@ -3,4 +3,4 @@ Action:
   - sqs:SendMessage
   - sqs:GetQueueAttributes
 Resource:
-  - '{{resolve:ssm:/${self:provider.stage}/workflow-service/SQS_DLQ_ARN}}'
+  - '{{resolve:ssm:${self:custom.naming.ssmPrefix}/SQS_DLQ_ARN}}'

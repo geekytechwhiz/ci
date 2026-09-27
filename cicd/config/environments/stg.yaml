@@ -3,6 +3,13 @@ environment:
   name: stg
   awsRegion: ap-south-1
 
+naming:
+  platformCode: nv
+  projectCode: mvx
+  regionShortCodes:
+    us-east-1: use1
+    ap-south-1: aps1
+
 github:
   connectionArn: REPLACE_ME_CODECONNECTIONS_ARN
 

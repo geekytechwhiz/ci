@@ -101,6 +101,13 @@
           },
           "additionalProperties": false
         },
+        "naming": {
+          "type": "object",
+          "properties": {
+            "resourceNamePrefix": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
         "features": {
           "type": "object",
           "properties": {
@@ -128,7 +135,6 @@
             "healthCheckPath": { "type": "string" },
             "apiBaseUrlParameter": { "type": "string" },
             "healthResponseContains": { "type": "string" },
-            "smokeTest": { "type": "string", "enum": ["required", "optional"] },
             "buildProjectName": { "type": "string" }
           },
           "additionalProperties": false

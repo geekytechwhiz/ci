@@ -4,6 +4,13 @@ environment:
   name: dev
   awsRegion: us-east-1
 
+naming:
+  platformCode: nv
+  projectCode: mvx
+  regionShortCodes:
+    us-east-1: use1
+    ap-south-1: aps1
+
 github: 
   connectionArn: ""
 

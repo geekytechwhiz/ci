@@ -28,7 +28,7 @@ Record-Deployment  ci/record-deployment.sh                always runs; writes LA
  
 | Script | Pipeline use | Manual use |
 |--------|----------------|------------|
-| `build.sh` | Build stage (package + generate `deployment-manifest.json`) | Package all three stacks locally; write the commit-scoped manifest when `CURRENT_COMMIT` is set |
+| `build.sh` | Build stage (package only) | Package data, infra, and app into `data/packaged.yaml`, `infra/packaged.yaml`, `app/packaged.yaml`. Does not deploy or write pipeline metadata. |
 | `verify-artifacts.sh` | Build POST_BUILD | Confirm Lambda zips and commit-scoped templates exist in `ARTIFACT_BUCKET` |
 | `preflight-data.sh` | Deploy-Data CodeBuild (once, before CloudFormation) | Primary read-only classifier: `CREATE` / `UPDATE` / `RECOVERY_REQUIRED` / `STOP`. Validates the commit-scoped Data artifact, stack, and WorkflowTable. Writes `deployment-data-preflight.env`. Does not import or modify the table. |
 | `deploy-data.sh` | Deploy-Data CodeBuild | Consumes `deployment-data-preflight.env`. Create or update `{stage}-workflow-service-data`. Stops on `STOP`. Does **not** re-run full preflight when the env file exists. Does **not** CloudFormation IMPORT. `RECOVERY_REQUIRED` is routed by the buildspec to `recover-data.sh` (prepare). A CREATE-only `describe-table` check is a TOCTOU safety guard, not a second classification. |

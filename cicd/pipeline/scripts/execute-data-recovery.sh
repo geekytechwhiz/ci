@@ -54,6 +54,7 @@ fail_stop() {
   log "ERROR: execute-change-set was not called, or post-import validation failed."
   log "ERROR: The DynamoDB table was not deleted or recreated. SSM parameters were not written."
   log "ERROR: A normal Data UPDATE was not performed."
+  print_cfn_failure_diagnostics "${DATA_STACK_NAME:-}"
   exit 1
 }
 
@@ -368,7 +369,7 @@ validate_imported_table() {
     EXPECTED_ACCOUNT="$caller_account" \
     EXPECTED_REGION="$AWS_REGION" \
     EXPECTED_SERVICE="$OWNERSHIP_TAG_SERVICE" \
-    EXPECTED_STAGE="$STAGE" \
+    EXPECTED_STAGE="${OWNERSHIP_TAG_STAGE:-$STAGE}" \
     EXPECTED_PURPOSE="$OWNERSHIP_TAG_PURPOSE" \
     EXPECTED_MANAGED_BY="$OWNERSHIP_TAG_MANAGED_BY" \
     TABLE_JSON="${TABLE_JSON}" \

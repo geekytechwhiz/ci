@@ -9,7 +9,8 @@
 # Required env:
 #   STAGE                 (dev|stg|prd)
 # Optional env:
-#   AWS_REGION            (default us-east-1)
+#   AWS_REGION            (from deployment context; default us-east-1 for local runs)
+#   EVENT_BUS_NAME        (optional; default from workflow/config/naming.yml eventBusName)
 #   SERVICE_NAME          (default workflow-service)
 #   INFRA_STACK_NAME      (default ${STAGE}-${SERVICE_NAME}-infra)
 #   EVENT_BUS_NAME        (default workflow-service-bus-${STAGE})
@@ -27,6 +28,11 @@ STAGE="${STAGE:?STAGE must be set (dev, stg, or prd)}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 SERVICE_NAME="${SERVICE_NAME:-workflow-service}"
 INFRA_STACK_NAME="${INFRA_STACK_NAME:-${STAGE}-${SERVICE_NAME}-infra}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+NAMING_FILE="${NAMING_FILE:-${SCRIPT_DIR}/../config/naming.yml}"
+if [ -z "${EVENT_BUS_NAME:-}" ] && [ -f "$NAMING_FILE" ]; then
+  EVENT_BUS_NAME="$(grep -E '^[[:space:]]*eventBusName:[[:space:]]*' "$NAMING_FILE" | head -1 | sed -E 's/^[[:space:]]*eventBusName:[[:space:]]*//; s/^["'\''']|["'\''']$//g')"
+fi
 EVENT_BUS_NAME="${EVENT_BUS_NAME:-workflow-service-bus-${STAGE}}"
 EVENT_BUS_LOGICAL_ID="${EVENT_BUS_LOGICAL_ID:-WorkflowEventsBus}"
 CFN_DEPLOY_ROLE_ARN="${CFN_DEPLOY_ROLE_ARN:-arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):role/${STAGE}-${SERVICE_NAME}-cfn-deploy-role}"

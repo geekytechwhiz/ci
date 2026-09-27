@@ -70,6 +70,9 @@ case "${DATA_ACTION:-}" in
     export DATA_REASON="${DATA_REASON:-stack missing; existing table ownership verified}"
     export RECOVERY_REQUIRED=true
     export RECOVERY_CHANGE_SET_NAME="${RECOVERY_CHANGE_SET_NAME:-${CHANGE_SET_NAME:-}}"
+    if [ -n "${RECOVERY_CHANGE_SET_NAME}" ]; then
+      export DATA_REASON="${DATA_REASON}; change-set=${RECOVERY_CHANGE_SET_NAME}"
+    fi
     export RECOVERY_STACK_NAME="${RECOVERY_STACK_NAME:-${DATA_STACK_NAME}}"
     export RECOVERY_TABLE_NAME="${RECOVERY_TABLE_NAME:-${DATA_TABLE_NAME}}"
     export RECOVERY_STAGE="${RECOVERY_STAGE:-${STAGE}}"
@@ -98,6 +101,8 @@ esac
 
 # Re-export for CodeBuild exported-variables. The buildspec must source this
 # file in the parent shell; `bash run-deploy-data.sh` cannot publish them.
+require_data_deployment_variables
+
 export DATA_ACTION DATA_REASON RECOVERY_REQUIRED RECOVERY_CHANGE_SET_NAME
 export RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE CURRENT_COMMIT
 DATA_DEPLOYMENT_VARIABLES_ENV="${DATA_DEPLOYMENT_VARIABLES_ENV:-data-deployment-variables.env}"

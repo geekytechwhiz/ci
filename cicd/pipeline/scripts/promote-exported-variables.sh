@@ -47,8 +47,28 @@ else
     source "$_promote_env_file"
     set +a
 
+    # RECOVERY_CHANGE_SET_NAME is required only for recovery. A normal
+    # CREATE/UPDATE writes RECOVERY_REQUIRED=false and RECOVERY_CHANGE_SET_NAME=.
+    # Do not invent NONE/N/A/UNKNOWN. Unset the empty value so CodeBuild does
+    # not export it into a CodePipeline namespace (empty namespace vars fail
+    # VariableCheck with "Variable cannot be empty").
+    if [ "${RECOVERY_REQUIRED:-false}" = "true" ]; then
+      if [ -z "${RECOVERY_CHANGE_SET_NAME:-}" ]; then
+        echo "ERROR: RECOVERY_CHANGE_SET_NAME is required when recovery is required" >&2
+        _promote_status=1
+      fi
+    elif [ -z "${RECOVERY_CHANGE_SET_NAME:-}" ]; then
+      unset RECOVERY_CHANGE_SET_NAME || true
+    fi
+
     _promote_var=""
     for _promote_var in "$@"; do
+      if [ "$_promote_var" = "RECOVERY_CHANGE_SET_NAME" ] && [ "${RECOVERY_REQUIRED:-false}" != "true" ]; then
+        if [ -z "${RECOVERY_CHANGE_SET_NAME:-}" ]; then
+          echo "Optional RECOVERY_CHANGE_SET_NAME is empty (RECOVERY_REQUIRED=${RECOVERY_REQUIRED:-false}); not exporting to CodePipeline."
+          continue
+        fi
+      fi
       if [ -z "${!_promote_var:-}" ]; then
         echo "ERROR: ${_promote_var} is empty after sourcing ${_promote_env_file}" >&2
         echo "ERROR: CodePipeline VariableCheck fails with 'Variable cannot be empty' when this happens." >&2
@@ -70,5 +90,6 @@ unset _promote_env_file _promote_var
 if [ "$_promote_status" -ne 0 ]; then
   unset _promote_status
   false
+else
+  unset _promote_status
 fi
-unset _promote_status

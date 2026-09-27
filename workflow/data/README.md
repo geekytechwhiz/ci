@@ -59,7 +59,7 @@ WORKFLOW_TABLE: '{{resolve:ssm:/${self:provider.stage}/workflow-service/TABLE_NA
 ## Package locally
 
 ```bash
-cd apps/workflow-service/data
+cd data
 npx serverless print --config serverless.data.yml --stage dev
 npx serverless package --config serverless.data.yml --stage dev --package .serverless
 ```

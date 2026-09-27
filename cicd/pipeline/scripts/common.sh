@@ -1,24 +1,37 @@
 #!/bin/bash
 # Generic CodePipeline helpers. Sourced by other runtime scripts.
-# 100% service-agnostic — all names come from env (SERVICE_NAME, STAGE, …).
+# Stack names may come from env (SERVICE_NAME, STAGE). DynamoDB TableName and
+# logical ID come from the service Data packaged template — never invent
+# ${SERVICE_NAME}-${STAGE} or prefix an explicit service resource name.
 set -euo pipefail
 
 : "${SERVICE_NAME:?SERVICE_NAME must be set}"
 
 STAGE="${STAGE:-}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+AWS_REGION="${AWS_REGION:-}"
+if [ -z "${AWS_REGION}" ]; then
+  echo "ERROR: AWS_REGION is required." >&2
+  echo "ERROR: Do not default the AWS region." >&2
+  exit 1
+fi
 
 APP_STACK_NAME="${STACK_NAME:-${APP_STACK_NAME:-${STAGE}-${SERVICE_NAME}}}"
 DATA_STACK_NAME="${DATA_STACK_NAME:-${STAGE}-${SERVICE_NAME}-data}"
 INFRA_STACK_NAME="${INFRA_STACK_NAME:-${STAGE}-${SERVICE_NAME}-infra}"
-DATA_TABLE_NAME="${DATA_TABLE_NAME:-${SERVICE_NAME}-${STAGE}}"
-DATA_LOGICAL_ID="${DATA_LOGICAL_ID:-PrimaryTable}"
-SSM_PREFIX="${SSM_PREFIX:-/${STAGE}/${SERVICE_NAME}}"
+DATA_TABLE_NAME="${DATA_TABLE_NAME:-}"
+DATA_LOGICAL_ID="${DATA_LOGICAL_ID:-}"
+RESOURCE_NAME_PREFIX="${RESOURCE_NAME_PREFIX:-}"
+APPLICATION_SERVICE_NAME="${APPLICATION_SERVICE_NAME:-}"
+# SSM_PREFIX is the service SSM contract from the pipeline. Empty is an error;
+# do not invent /{Stage}/{applicationName} or /{ResourceNamePrefix}/{applicationName}.
 LAST_DEPLOYED_COMMIT_PARAM="${LAST_DEPLOYED_COMMIT_PARAM:-/${STAGE}/${SERVICE_NAME}/cicd/LAST_DEPLOYED_COMMIT}"
 
-OWNERSHIP_TAG_SERVICE="${OWNERSHIP_TAG_SERVICE:-${SERVICE_NAME}}"
-OWNERSHIP_TAG_PURPOSE="${OWNERSHIP_TAG_PURPOSE:-${DATA_LOGICAL_ID}}"
-OWNERSHIP_TAG_MANAGED_BY="${OWNERSHIP_TAG_MANAGED_BY:-serverless}"
+# Ownership identity is filled from the service Data packaged template.
+# Pipeline/env OWNERSHIP_TAG_* values are hints only and are overwritten.
+OWNERSHIP_TAG_SERVICE="${OWNERSHIP_TAG_SERVICE:-}"
+OWNERSHIP_TAG_PURPOSE="${OWNERSHIP_TAG_PURPOSE:-}"
+OWNERSHIP_TAG_MANAGED_BY="${OWNERSHIP_TAG_MANAGED_BY:-}"
+OWNERSHIP_TAG_STAGE="${OWNERSHIP_TAG_STAGE:-}"
 
 # Resolve the service directory that owns packaged templates (data/, infrastructure/, serverless.yml).
 # Prefer an explicit SERVICE_DIR / SERVICE_ROOT. Otherwise derive from CI_PATH
@@ -61,6 +74,22 @@ if [ -z "${SERVICE_ROOT:-}" ]; then
 fi
 SERVICE_DIR="${SERVICE_DIR:-$SERVICE_ROOT}"
 unset -f _resolve_service_root_from_ci_path
+
+# Application identity (Serverless service + physical resource names) is distinct
+# from pipeline SERVICE_NAME (CodePipeline project / artifact prefix).
+if [ -z "${APPLICATION_SERVICE_NAME}" ] && [ -f "${SERVICE_DIR}/serverless.yml" ]; then
+  APPLICATION_SERVICE_NAME="$(awk '/^service:[[:space:]]*/ { print $2; exit }' "${SERVICE_DIR}/serverless.yml")"
+fi
+
+SSM_PREFIX="${SSM_PREFIX:-}"
+SSM_PREFIX="${SSM_PREFIX#"${SSM_PREFIX%%[![:space:]]*}"}"
+SSM_PREFIX="${SSM_PREFIX%"${SSM_PREFIX##*[![:space:]]}"}"
+if [ -z "${SSM_PREFIX}" ]; then
+  echo "ERROR: SSM_PREFIX is missing." >&2
+  echo "ERROR: The pipeline must supply the service SSM contract prefix." >&2
+  echo "ERROR: Do not invent /{Stage}/{ServiceName} or /{ResourceNamePrefix}/{applicationName}." >&2
+  exit 1
+fi
 
 # Comma-separated list → bash array. Empty → empty array (validate-ssm may warn/skip).
 REQUIRED_SSM_PARAMS=()
@@ -208,6 +237,60 @@ immutable_packaged_template_s3_uri() {
   printf 's3://%s/%s/%s/packaged.yaml' "$bucket" "$prefix" "$layer"
 }
 
+# Stable local path so Preflight and Deploy use the same downloaded bytes.
+immutable_packaged_template_local_path() {
+  local layer="$1"
+  local root
+
+  case "$layer" in
+    data|infra|app) ;;
+    *)
+      echo "ERROR: artifact layer must be data, infra, or app (got: ${layer:-unset})" >&2
+      return 1
+      ;;
+  esac
+
+  if [ -n "${CODEBUILD_SRC_DIR:-}" ]; then
+    root="${CODEBUILD_SRC_DIR}"
+  else
+    root="${TMPDIR:-/tmp}"
+  fi
+
+  if [ -n "${CURRENT_COMMIT:-}" ]; then
+    printf '%s' "${root}/.pipeline-immutable/${SERVICE_NAME}/${CURRENT_COMMIT}/${layer}/packaged.yaml"
+  else
+    printf '%s' "${root}/.pipeline-immutable/${SERVICE_NAME}/local/${layer}/packaged.yaml"
+  fi
+}
+
+sha256_file() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$file" | awk '{print $NF}'
+  elif command -v node >/dev/null 2>&1; then
+    SHA_FILE="$file" node -e 'const fs=require("fs"); const crypto=require("crypto"); process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.env.SHA_FILE)).digest("hex"));'
+  else
+    echo "ERROR: No sha256 tool available (sha256sum, shasum, openssl, or node)." >&2
+    return 1
+  fi
+}
+
+# Discover Lambda ZIPs from the packaged application template + Serverless output.
+discover_lambda_artifacts_json() {
+  local template="${1:?packaged template required}"
+  local script
+  script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/discover-lambda-artifacts.cjs"
+  if [ ! -f "$script" ]; then
+    echo "ERROR: discover-lambda-artifacts.cjs not found at $script" >&2
+    return 1
+  fi
+  SEARCH_DIRS="${SEARCH_DIRS:-.serverless:app/.serverless}" node "$script" "$template" --require-zips
+}
+
 # Download the exact packaged template published by Build for this commit.
 # When CURRENT_COMMIT is set (pipeline), S3 is required — do not silently use a
 # local/BuildArtifact copy. Manual/emergency runs without CURRENT_COMMIT keep
@@ -243,6 +326,7 @@ fetch_immutable_packaged_template() {
   fi
 
   echo "Fetching immutable ${layer} artifact ${uri}"
+  mkdir -p "$(dirname "$dest")"
   if ! aws s3 cp "$uri" "$dest"; then
     echo "ERROR: Failed to download ${uri}" >&2
     echo "Build must publish ${SERVICE_NAME}/${CURRENT_COMMIT}/${layer}/packaged.yaml" >&2
@@ -251,21 +335,518 @@ fetch_immutable_packaged_template() {
   fi
 }
 
+# Resolve DynamoDB logical ID, physical TableName, and identity tags from the
+# service Data packaged template. Does not invent names or tags, and does not
+# rewrite TableName with ResourceNamePrefix.
+apply_data_resource_identity_from_template() {
+  local template_path="${1:-}"
+  local resolved hint_logical hint_table hint_service hint_purpose hint_managed
+  local logical_id table_name tag_service tag_stage tag_purpose tag_managed
+
+  if [ -z "$template_path" ] || [ ! -s "$template_path" ]; then
+    echo "ERROR: Data packaged template is required to resolve the DynamoDB table identity." >&2
+    return 1
+  fi
+
+  hint_logical="${DATA_LOGICAL_ID:-}"
+  hint_table="${DATA_TABLE_NAME:-}"
+  hint_service="${OWNERSHIP_TAG_SERVICE:-}"
+  hint_purpose="${OWNERSHIP_TAG_PURPOSE:-}"
+  hint_managed="${OWNERSHIP_TAG_MANAGED_BY:-}"
+
+  resolved="$(
+    TEMPLATE_PATH="$template_path" \
+    HINT_LOGICAL_ID="$hint_logical" \
+    node <<'NODE'
+const fs = require('fs');
+const path = process.env.TEMPLATE_PATH;
+const hintLogical = (process.env.HINT_LOGICAL_ID || '').trim();
+let template;
+try {
+  template = JSON.parse(fs.readFileSync(path, 'utf8'));
+} catch (e) {
+  console.error('ERROR: Data packaged template is not JSON: ' + e.message);
+  process.exit(1);
+}
+const resources = template.Resources || {};
+const tables = [];
+for (const [id, res] of Object.entries(resources)) {
+  if (res && res.Type === 'AWS::DynamoDB::Table') {
+    tables.push({ id, res });
+  }
+}
+if (tables.length === 0) {
+  console.error('ERROR: Data packaged template has no AWS::DynamoDB::Table resource.');
+  process.exit(1);
+}
+
+let chosen = null;
+if (hintLogical && resources[hintLogical] && resources[hintLogical].Type === 'AWS::DynamoDB::Table') {
+  chosen = { id: hintLogical, res: resources[hintLogical] };
+} else if (hintLogical) {
+  console.error('WARN: DATA_LOGICAL_ID=' + hintLogical + ' is not an AWS::DynamoDB::Table in the Data artifact; using the artifact table instead.');
+}
+if (!chosen) {
+  if (tables.length !== 1) {
+    console.error('ERROR: Data packaged template has ' + tables.length + ' DynamoDB tables; set DATA_LOGICAL_ID or provide exactly one table.');
+    process.exit(1);
+  }
+  chosen = tables[0];
+}
+
+const props = chosen.res.Properties || {};
+const tableName = props.TableName;
+if (!tableName || typeof tableName !== 'string' || !tableName.trim()) {
+  console.error('ERROR: ' + chosen.id + ' TableName is missing or not a literal string in the Data artifact.');
+  process.exit(1);
+}
+if (tableName.includes('${') || tableName.includes('!Ref') || tableName.includes('Fn::')) {
+  console.error('ERROR: ' + chosen.id + ' TableName is unresolved in the Data artifact: ' + tableName);
+  process.exit(1);
+}
+
+function tagValue(tags, key) {
+  if (!Array.isArray(tags)) return '';
+  for (const t of tags) {
+    if (t && t.Key === key && typeof t.Value === 'string') return t.Value;
+  }
+  return '';
+}
+
+const tags = props.Tags || [];
+const identity = {
+  logicalId: chosen.id,
+  tableName: tableName.trim(),
+  service: tagValue(tags, 'Service'),
+  stage: tagValue(tags, 'Stage'),
+  purpose: tagValue(tags, 'Purpose'),
+  managedBy: tagValue(tags, 'ManagedBy'),
+};
+process.stdout.write(JSON.stringify(identity));
+NODE
+  )" || return 1
+
+  logical_id="$(RESOLVED_JSON="$resolved" node -e 'process.stdout.write(JSON.parse(process.env.RESOLVED_JSON).logicalId || "")')"
+  table_name="$(RESOLVED_JSON="$resolved" node -e 'process.stdout.write(JSON.parse(process.env.RESOLVED_JSON).tableName || "")')"
+  tag_service="$(RESOLVED_JSON="$resolved" node -e 'process.stdout.write(JSON.parse(process.env.RESOLVED_JSON).service || "")')"
+  tag_stage="$(RESOLVED_JSON="$resolved" node -e 'process.stdout.write(JSON.parse(process.env.RESOLVED_JSON).stage || "")')"
+  tag_purpose="$(RESOLVED_JSON="$resolved" node -e 'process.stdout.write(JSON.parse(process.env.RESOLVED_JSON).purpose || "")')"
+  tag_managed="$(RESOLVED_JSON="$resolved" node -e 'process.stdout.write(JSON.parse(process.env.RESOLVED_JSON).managedBy || "")')"
+
+  if [ -z "$logical_id" ] || [ -z "$table_name" ]; then
+    echo "ERROR: Failed to parse DynamoDB identity from ${template_path}." >&2
+    return 1
+  fi
+
+  echo "Data resource identity from service artifact ${template_path}:"
+  echo "  logicalId=${logical_id}"
+  echo "  TableName=${table_name}"
+  echo "  tag Service=${tag_service:-<missing>}"
+  echo "  tag Stage=${tag_stage:-<missing>}"
+  echo "  tag Purpose=${tag_purpose:-<missing>}"
+  echo "  tag ManagedBy=${tag_managed:-<missing>}"
+
+  if [ -n "$hint_table" ] && [ "$hint_table" != "$table_name" ]; then
+    echo "INFO: Ignoring pipeline/env DATA_TABLE_NAME='${hint_table}'."
+    echo "INFO: Service Data artifact TableName='${table_name}' is authoritative."
+  fi
+  if [ -n "$hint_logical" ] && [ "$hint_logical" != "$logical_id" ]; then
+    echo "INFO: Using Data artifact logical ID '${logical_id}' (env had '${hint_logical}')."
+  fi
+  if [ -n "$hint_service" ] && [ "$hint_service" != "$tag_service" ]; then
+    echo "INFO: Ignoring pipeline/env OWNERSHIP_TAG_SERVICE='${hint_service}'."
+  fi
+  if [ -n "$hint_purpose" ] && [ "$hint_purpose" != "$tag_purpose" ]; then
+    echo "INFO: Ignoring pipeline/env OWNERSHIP_TAG_PURPOSE='${hint_purpose}'."
+  fi
+  if [ -n "$hint_managed" ] && [ "$hint_managed" != "$tag_managed" ]; then
+    echo "INFO: Ignoring pipeline/env OWNERSHIP_TAG_MANAGED_BY='${hint_managed}'."
+  fi
+
+  DATA_LOGICAL_ID="$logical_id"
+  DATA_TABLE_NAME="$table_name"
+  OWNERSHIP_TAG_SERVICE="$tag_service"
+  OWNERSHIP_TAG_STAGE="$tag_stage"
+  OWNERSHIP_TAG_PURPOSE="$tag_purpose"
+  OWNERSHIP_TAG_MANAGED_BY="$tag_managed"
+  export DATA_LOGICAL_ID DATA_TABLE_NAME
+  export OWNERSHIP_TAG_SERVICE OWNERSHIP_TAG_STAGE OWNERSHIP_TAG_PURPOSE OWNERSHIP_TAG_MANAGED_BY
+  echo "Using expected DynamoDB identity from packaged.yaml: logicalId=${DATA_LOGICAL_ID} tableName=${DATA_TABLE_NAME} Service=${OWNERSHIP_TAG_SERVICE:-<missing>} Stage=${OWNERSHIP_TAG_STAGE:-<missing>} Purpose=${OWNERSHIP_TAG_PURPOSE:-<missing>} ManagedBy=${OWNERSHIP_TAG_MANAGED_BY:-<missing>}"
+
+  if [ -z "$tag_service" ] || [ -z "$tag_stage" ] || [ -z "$tag_purpose" ] || [ -z "$tag_managed" ]; then
+    echo "ERROR: ${logical_id} is missing required identity tags Service, Stage, Purpose, and ManagedBy in the Data artifact." >&2
+    echo "ERROR: The generic pipeline will not invent ownership tags." >&2
+    return 1
+  fi
+
+  if [ -n "${STAGE:-}" ] && [ "$tag_stage" != "$STAGE" ]; then
+    echo "ERROR: Artifact tag Stage='${tag_stage}' does not match pipeline STAGE='${STAGE}'." >&2
+    echo "ERROR: The generic pipeline will not override the service-generated Stage tag." >&2
+    return 1
+  fi
+
+  # Service-generated TableName is authoritative, but it must still comply with
+  # the environment naming prefix (RESOURCE_NAME_PREFIX, e.g. nvdev-use1-mvx).
+  # Do not rewrite the name; fail closed if it does not match.
+  if [ -z "${RESOURCE_NAME_PREFIX:-}" ]; then
+    if [ -n "${CURRENT_COMMIT:-}" ]; then
+      echo "ERROR: RESOURCE_NAME_PREFIX is required to validate the service-generated TableName." >&2
+      echo "ERROR: The pipeline must not invent or rewrite DynamoDB table names." >&2
+      return 1
+    fi
+  else
+    case "$table_name" in
+      "${RESOURCE_NAME_PREFIX}"*)
+        ;;
+      *)
+        echo "ERROR: Artifact TableName '${table_name}' does not start with RESOURCE_NAME_PREFIX='${RESOURCE_NAME_PREFIX}'." >&2
+        echo "ERROR: The generic pipeline will not rename the table to satisfy the prefix." >&2
+        return 1
+        ;;
+    esac
+  fi
+}
+
+# Data stack status classifiers. Used by Data Preflight and contract tests.
+data_stack_is_usable() {
+  case "$1" in
+    CREATE_COMPLETE|UPDATE_COMPLETE|IMPORT_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+data_stack_is_in_progress() {
+  case "$1" in
+    *_IN_PROGRESS|REVIEW_IN_PROGRESS)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Rollback itself failed. Never CREATE/UPDATE/IMPORT; operator must repair CFN first.
+data_stack_is_rollback_failed() {
+  case "$1" in
+    ROLLBACK_FAILED|UPDATE_ROLLBACK_FAILED|IMPORT_ROLLBACK_FAILED|DELETE_FAILED)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Failed terminal states where the stack name is occupied but cannot be updated.
+# Physical retained resources may still exist and require IMPORT after stack cleanup.
+data_stack_is_failed_reimport_candidate() {
+  case "$1" in
+    ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Pure classifier for the Data deployment state machine.
+# Arguments:
+#   stack_state          EXISTS|NOT_FOUND
+#   stack_status         CloudFormation StackStatus or empty
+#   table_state          EXISTS|NOT_FOUND
+#   ownership            VERIFIED|UNVERIFIED|NOT_APPLICABLE
+#   configuration        COMPATIBLE|INCOMPATIBLE|NOT_APPLICABLE
+#   managed_resource_ok  1 when a usable stack still owns the expected logical table
+classify_data_preflight_action() {
+  local stack_state="${1:-}"
+  local stack_status="${2:-}"
+  local table_state="${3:-}"
+  local ownership="${4:-}"
+  local configuration="${5:-}"
+  local managed_ok="${6:-0}"
+
+  if [ "$stack_state" = "EXISTS" ]; then
+    if data_stack_is_usable "$stack_status"; then
+      if [ "$managed_ok" = "1" ]; then
+        printf 'UPDATE'
+      else
+        printf 'STOP'
+      fi
+      return 0
+    fi
+    if [ "$stack_status" = "REVIEW_IN_PROGRESS" ]; then
+      printf 'RECOVERY_REQUIRED'
+      return 0
+    fi
+    if data_stack_is_in_progress "$stack_status"; then
+      printf 'STOP'
+      return 0
+    fi
+    if data_stack_is_rollback_failed "$stack_status"; then
+      printf 'STOP'
+      return 0
+    fi
+    if data_stack_is_failed_reimport_candidate "$stack_status"; then
+      if [ "$table_state" = "NOT_FOUND" ]; then
+        printf 'CREATE'
+        return 0
+      fi
+      if [ "$table_state" = "EXISTS" ] && [ "$ownership" = "VERIFIED" ] && [ "$configuration" = "COMPATIBLE" ]; then
+        printf 'RECOVERY_REQUIRED'
+        return 0
+      fi
+      printf 'STOP'
+      return 0
+    fi
+    printf 'STOP'
+    return 0
+  fi
+
+  if [ "$table_state" = "NOT_FOUND" ]; then
+    printf 'CREATE'
+    return 0
+  fi
+  if [ "$table_state" = "EXISTS" ] && [ "$ownership" = "VERIFIED" ] && [ "$configuration" = "COMPATIBLE" ]; then
+    printf 'RECOVERY_REQUIRED'
+    return 0
+  fi
+  printf 'STOP'
+}
+
+# Always-required DataDeploymentVariables. RECOVERY_CHANGE_SET_NAME is required
+# only when RECOVERY_REQUIRED=true. Empty is a valid normal CREATE/UPDATE value.
+require_data_deployment_variables() {
+  local required_var
+  for required_var in DATA_ACTION RECOVERY_REQUIRED CURRENT_COMMIT \
+    RECOVERY_STACK_NAME RECOVERY_TABLE_NAME RECOVERY_STAGE DATA_REASON; do
+    if [ -z "${!required_var:-}" ]; then
+      echo "ERROR: ${required_var} is required for DataDeploymentVariables." >&2
+      return 1
+    fi
+  done
+  if [ "${RECOVERY_REQUIRED:-false}" = "true" ]; then
+    if [ -z "${RECOVERY_CHANGE_SET_NAME:-}" ]; then
+      echo "ERROR: RECOVERY_CHANGE_SET_NAME is required when recovery is required" >&2
+      return 1
+    fi
+  fi
+}
+
+# Remove a failed CloudFormation stack record so CREATE/IMPORT can retry.
+# DynamoDB DeletionPolicy Retain keeps any physical table; do not DeleteTable.
+delete_failed_cfn_stack_record() {
+  local stack="$1"
+  local status="$2"
+  local table_exists=0
+  local deletion_policy=""
+
+  case "$status" in
+    ROLLBACK_COMPLETE|CREATE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_FAILED)
+      ;;
+    *)
+      echo "ERROR: Refusing to delete stack ${stack} in status ${status:-unset}." >&2
+      return 1
+      ;;
+  esac
+
+  if [ -n "${DATA_TABLE_NAME:-}" ] && aws dynamodb describe-table \
+    --region "$AWS_REGION" \
+    --table-name "$DATA_TABLE_NAME" >/dev/null 2>&1; then
+    table_exists=1
+  fi
+
+  if [ "$table_exists" -eq 1 ]; then
+    echo "Physical table ${DATA_TABLE_NAME} exists. Stack-record delete is allowed only because DeletionPolicy Retain keeps the table."
+    if [ -n "${PACKAGED_TEMPLATE_PATH:-${DATA_PACKAGED_TEMPLATE:-}}" ] && [ -n "${DATA_LOGICAL_ID:-}" ]; then
+      deletion_policy="$(
+        TEMPLATE_PATH="${PACKAGED_TEMPLATE_PATH:-${DATA_PACKAGED_TEMPLATE}}" \
+        LOGICAL_ID="$DATA_LOGICAL_ID" \
+        node -e '
+          const fs = require("fs");
+          const t = JSON.parse(fs.readFileSync(process.env.TEMPLATE_PATH, "utf8"));
+          const r = (t.Resources || {})[process.env.LOGICAL_ID] || {};
+          process.stdout.write(r.DeletionPolicy || "");
+        ' 2>/dev/null || true
+      )"
+      if [ "$deletion_policy" != "Retain" ]; then
+        echo "ERROR: Refusing to delete stack ${stack} while ${DATA_TABLE_NAME} exists and artifact DeletionPolicy is '${deletion_policy:-missing}'." >&2
+        echo "ERROR: Physical DynamoDB tables are never deleted or recreated as a shortcut." >&2
+        return 1
+      fi
+    fi
+  fi
+
+  echo "Removing failed CloudFormation stack record ${stack} (${status})."
+  echo "DeletionPolicy Retain keeps existing DynamoDB tables. Tables are not deleted or recreated."
+  aws cloudformation delete-stack \
+    --region "$AWS_REGION" \
+    --stack-name "$stack"
+  if ! aws cloudformation wait stack-delete-complete \
+    --region "$AWS_REGION" \
+    --stack-name "$stack"; then
+    print_cfn_failure_diagnostics "$stack"
+    echo "ERROR: Failed to delete the failed stack record ${stack}. DynamoDB was not targeted for deletion." >&2
+    return 1
+  fi
+}
+
+# After CloudFormation deploy succeeds, verify the live Data stack and table
+# match the immutable artifact. aws cloudformation deploy exit 0 is not enough.
+validate_deployed_data_stack() {
+  local stack="${1:-${DATA_STACK_NAME}}"
+  local template_path="${2:-${PACKAGED_TEMPLATE_PATH:-}}"
+  local status physical_id table_status ownership_ok=0
+  local tags_json tag_service tag_stage tag_purpose tag_managed
+
+  echo "Validating deployed Data stack ${stack} against artifact identity"
+
+  status="$(aws cloudformation describe-stacks \
+    --region "$AWS_REGION" \
+    --stack-name "$stack" \
+    --query 'Stacks[0].StackStatus' \
+    --output text)"
+  echo "  stack status=${status}"
+  case "$status" in
+    CREATE_COMPLETE|UPDATE_COMPLETE|IMPORT_COMPLETE)
+      ;;
+    *)
+      echo "ERROR: Data stack ${stack} status is ${status:-missing}, expected CREATE_COMPLETE, UPDATE_COMPLETE, or IMPORT_COMPLETE." >&2
+      print_cfn_failure_diagnostics "$stack"
+      return 1
+      ;;
+  esac
+
+  physical_id="$(aws cloudformation describe-stack-resource \
+    --region "$AWS_REGION" \
+    --stack-name "$stack" \
+    --logical-resource-id "$DATA_LOGICAL_ID" \
+    --query 'StackResourceDetail.PhysicalResourceId' \
+    --output text)"
+  echo "  logical ${DATA_LOGICAL_ID} physical=${physical_id}"
+  if [ "${physical_id}" != "${DATA_TABLE_NAME}" ]; then
+    echo "ERROR: Logical ${DATA_LOGICAL_ID} physical id '${physical_id:-missing}' does not match artifact TableName '${DATA_TABLE_NAME}'." >&2
+    return 1
+  fi
+
+  table_status="$(aws dynamodb describe-table \
+    --region "$AWS_REGION" \
+    --table-name "$DATA_TABLE_NAME" \
+    --query 'Table.TableStatus' \
+    --output text)"
+  echo "  table ${DATA_TABLE_NAME} status=${table_status}"
+  if [ "${table_status}" != "ACTIVE" ]; then
+    echo "ERROR: DynamoDB table ${DATA_TABLE_NAME} status is ${table_status:-missing}, expected ACTIVE." >&2
+    return 1
+  fi
+
+  tags_json="$(aws dynamodb list-tags-of-resource \
+    --region "$AWS_REGION" \
+    --resource-arn "$(aws dynamodb describe-table --region "$AWS_REGION" --table-name "$DATA_TABLE_NAME" --query 'Table.TableArn' --output text)" \
+    --output json)"
+  tag_service="$(TAGS_JSON="$tags_json" node -e 'const t=JSON.parse(process.env.TAGS_JSON).Tags||[]; const m={}; for (const x of t) m[x.Key]=x.Value; process.stdout.write(m.Service||"");')"
+  tag_stage="$(TAGS_JSON="$tags_json" node -e 'const t=JSON.parse(process.env.TAGS_JSON).Tags||[]; const m={}; for (const x of t) m[x.Key]=x.Value; process.stdout.write(m.Stage||"");')"
+  tag_purpose="$(TAGS_JSON="$tags_json" node -e 'const t=JSON.parse(process.env.TAGS_JSON).Tags||[]; const m={}; for (const x of t) m[x.Key]=x.Value; process.stdout.write(m.Purpose||"");')"
+  tag_managed="$(TAGS_JSON="$tags_json" node -e 'const t=JSON.parse(process.env.TAGS_JSON).Tags||[]; const m={}; for (const x of t) m[x.Key]=x.Value; process.stdout.write(m.ManagedBy||"");')"
+  echo "  tags Service=${tag_service} Stage=${tag_stage} Purpose=${tag_purpose} ManagedBy=${tag_managed}"
+
+  if [ "${tag_service}" = "${OWNERSHIP_TAG_SERVICE}" ] \
+    && [ "${tag_stage}" = "${OWNERSHIP_TAG_STAGE:-$STAGE}" ] \
+    && [ "${tag_purpose}" = "${OWNERSHIP_TAG_PURPOSE}" ] \
+    && [ "${tag_managed}" = "${OWNERSHIP_TAG_MANAGED_BY}" ]; then
+    ownership_ok=1
+  fi
+  if [ "$ownership_ok" -ne 1 ]; then
+    echo "ERROR: Deployed table tags do not match artifact identity Service=${OWNERSHIP_TAG_SERVICE} Stage=${OWNERSHIP_TAG_STAGE:-$STAGE} Purpose=${OWNERSHIP_TAG_PURPOSE} ManagedBy=${OWNERSHIP_TAG_MANAGED_BY}." >&2
+    return 1
+  fi
+
+  if [ -n "$template_path" ] && [ -f "$template_path" ]; then
+    local table_json backups_json
+    table_json="$(aws dynamodb describe-table \
+      --region "$AWS_REGION" \
+      --table-name "$DATA_TABLE_NAME" \
+      --output json)"
+    backups_json="$(aws dynamodb describe-continuous-backups \
+      --region "$AWS_REGION" \
+      --table-name "$DATA_TABLE_NAME" \
+      --output json)"
+    TABLE_JSON="$table_json" BACKUPS_JSON="$backups_json" \
+    TEMPLATE_PATH="$template_path" LOGICAL_ID="$DATA_LOGICAL_ID" TABLE_NAME="$DATA_TABLE_NAME" node -e '
+      const fs = require("fs");
+      const t = JSON.parse(fs.readFileSync(process.env.TEMPLATE_PATH, "utf8"));
+      const r = (t.Resources || {})[process.env.LOGICAL_ID];
+      if (!r || r.Type !== "AWS::DynamoDB::Table") {
+        console.error("ERROR: artifact is missing AWS::DynamoDB::Table " + process.env.LOGICAL_ID);
+        process.exit(1);
+      }
+      const expected = r.Properties || {};
+      if (expected.TableName !== process.env.TABLE_NAME) {
+        console.error("ERROR: artifact TableName " + expected.TableName + " does not match " + process.env.TABLE_NAME);
+        process.exit(1);
+      }
+      if (r.DeletionPolicy !== "Retain" || r.UpdateReplacePolicy !== "Retain") {
+        console.error("ERROR: artifact must keep DeletionPolicy/UpdateReplacePolicy Retain for recovery/import.");
+        process.exit(1);
+      }
+      const table = (JSON.parse(process.env.TABLE_JSON || "{}").Table) || {};
+      const backups = JSON.parse(process.env.BACKUPS_JSON || "{}");
+      const errors = [];
+      const sortKeys = (list) => (list || []).map((k) => k.AttributeName + ":" + k.KeyType).sort().join(",");
+      if (sortKeys(table.KeySchema) !== sortKeys(expected.KeySchema)) {
+        errors.push("KeySchema mismatch");
+      }
+      const liveBilling = (table.BillingModeSummary && table.BillingModeSummary.BillingMode) || table.BillingMode || "";
+      if (expected.BillingMode && liveBilling !== expected.BillingMode) {
+        errors.push("BillingMode is " + liveBilling + ", expected " + expected.BillingMode);
+      }
+      if (expected.StreamSpecification) {
+        const live = table.StreamSpecification || {};
+        if (live.StreamViewType !== expected.StreamSpecification.StreamViewType) {
+          errors.push("StreamViewType is " + (live.StreamViewType || "missing"));
+        }
+      }
+      if (expected.PointInTimeRecoverySpecification && expected.PointInTimeRecoverySpecification.PointInTimeRecoveryEnabled === true) {
+        const pitr = (((backups.ContinuousBackupsDescription || {}).PointInTimeRecoveryDescription || {}).PointInTimeRecoveryStatus);
+        if (pitr !== "ENABLED") errors.push("PITR is " + (pitr || "missing"));
+      }
+      if (errors.length) {
+        for (const e of errors) console.error("ERROR: " + e);
+        process.exit(1);
+      }
+    '
+  fi
+
+  echo "Deployed Data stack ${stack} matches the immutable artifact."
+}
+
 upload_environment_artifact() {
   local local_path="$1"
   local key="$2"
-  local bucket
+  local bucket local_sha remote_sha
 
   bucket="$(environment_artifact_bucket)"
+  local_sha="$(sha256_file "$local_path")"
 
   echo "Publishing $local_path → s3://${bucket}/${key} (SSE-S3 AES256)"
 
-  if aws s3api head-object --bucket "$bucket" --key "$key" >/dev/null 2>&1; then
+  if aws s3api head-object --bucket "$bucket" --key "$key" >/tmp/s3-head-object.json 2>/dev/null; then
+    remote_sha="$(HEAD_JSON="$(cat /tmp/s3-head-object.json)" node -e 'const o=JSON.parse(process.env.HEAD_JSON||"{}"); process.stdout.write((o.Metadata&& (o.Metadata.sha256||o.Metadata.Sha256))||"")')"
+    if [ -n "$remote_sha" ] && [ "$remote_sha" = "$local_sha" ]; then
+      echo "Already published s3://${bucket}/${key} with matching SHA-256; continuing"
+      return 0
+    fi
     echo "ERROR: Refusing to overwrite existing artifact s3://${bucket}/${key}" >&2
+    echo "ERROR: Existing object SHA-256=${remote_sha:-<unknown>} local SHA-256=${local_sha}" >&2
     exit 1
   fi
 
-  if ! aws s3 cp "$local_path" "s3://${bucket}/${key}" --sse AES256; then
+  if ! aws s3 cp "$local_path" "s3://${bucket}/${key}" --sse AES256 --metadata "sha256=${local_sha}"; then
     echo "ERROR: Failed to upload s3://${bucket}/${key}" >&2
     aws sts get-caller-identity || true
     exit 1
@@ -455,13 +1036,33 @@ generate_deployment_manifest() {
   bucket="$(environment_artifact_bucket)"
   prefix="$(environment_artifact_prefix "$CURRENT_COMMIT")"
 
+  local lambda_json="[]"
+  if [ -f "${SERVICE_DIR}/app/.serverless/lambda-artifacts.json" ]; then
+    lambda_json="$(LAMBDA_FILE="${SERVICE_DIR}/app/.serverless/lambda-artifacts.json" PREFIX="$prefix" node -e '
+      const fs = require("fs");
+      const data = JSON.parse(fs.readFileSync(process.env.LAMBDA_FILE, "utf8"));
+      const prefix = process.env.PREFIX;
+      const keys = (data.artifacts || []).map((a) => `${prefix}/app/${a.zipName}`);
+      process.stdout.write(JSON.stringify(keys));
+    ')"
+  fi
+
   cat >"$dest" <<EOF
 {
   "service": "${SERVICE_NAME}",
+  "pipelineServiceName": "${SERVICE_NAME}",
+  "applicationServiceName": "${APPLICATION_SERVICE_NAME}",
   "stage": "$STAGE",
   "currentCommit": "$CURRENT_COMMIT",
   "artifactBucket": "$bucket",
   "artifactPrefix": "$prefix",
+  "resourceNamePrefix": "${RESOURCE_NAME_PREFIX}",
+  "ssmPrefix": "${SSM_PREFIX}",
+  "awsRegion": "${AWS_REGION}",
+  "lambdaArtifacts": ${lambda_json},
+  "data": "${prefix}/data/packaged.yaml",
+  "infra": "${prefix}/infra/packaged.yaml",
+  "app": "${prefix}/app/packaged.yaml",
   "deployData": $DEPLOY_DATA,
   "deployInfra": $DEPLOY_INFRA,
   "deployApp": $DEPLOY_APP,
@@ -472,6 +1073,8 @@ generate_deployment_manifest() {
 EOF
 
   echo "Wrote deployment manifest: $dest"
+  echo "  pipelineServiceName=$SERVICE_NAME"
+  echo "  applicationServiceName=$APPLICATION_SERVICE_NAME"
   echo "  currentCommit=$CURRENT_COMMIT"
   echo "  artifactBucket=$bucket"
   echo "  artifactPrefix=$prefix"
@@ -532,6 +1135,55 @@ assume_data_recovery_role_if_configured() {
   export DATA_RECOVERY_ROLE_ASSUMED=1
 }
 
+# Print CloudFormation failure reasons into CodeBuild logs.
+# Prefers describe-events --filters FailedEvents=true; falls back to stack events.
+print_cfn_failure_diagnostics() {
+  local stack="${1:-}"
+  local region="${AWS_REGION:-}"
+
+  if [ -z "$stack" ]; then
+    echo "[CFN-DIAG] No stack name supplied; skipping CloudFormation diagnostics."
+    return 0
+  fi
+
+  echo "======================================="
+  echo "[CFN-DIAG] CloudFormation failure diagnostics"
+  echo "[CFN-DIAG] stack=${stack} region=${region:-<default>}"
+  echo "======================================="
+
+  echo "[CFN-DIAG] describe-stacks:"
+  aws cloudformation describe-stacks \
+    ${region:+--region "$region"} \
+    --stack-name "$stack" \
+    --output json 2>&1 | head -c 20000 || true
+  echo
+
+  echo "[CFN-DIAG] failed events (describe-events):"
+  if aws cloudformation describe-events \
+    ${region:+--region "$region"} \
+    --stack-name "$stack" \
+    --filters FailedEvents=true \
+    --output json >/tmp/cfn-failed-events.json 2>/tmp/cfn-failed-events.err; then
+    cat /tmp/cfn-failed-events.json
+  else
+    echo "[CFN-DIAG] describe-events failed; falling back to describe-stack-events."
+    cat /tmp/cfn-failed-events.err || true
+    aws cloudformation describe-stack-events \
+      ${region:+--region "$region"} \
+      --stack-name "$stack" \
+      --output json 2>&1 | head -c 40000 || true
+  fi
+  echo
+
+  echo "[CFN-DIAG] recent stack events:"
+  aws cloudformation describe-stack-events \
+    ${region:+--region "$region"} \
+    --stack-name "$stack" \
+    --query 'StackEvents[0:25].[Timestamp,ResourceStatus,LogicalResourceId,ResourceType,ResourceStatusReason]' \
+    --output table 2>&1 || true
+  echo "======================================="
+}
+
 # Normalize ENABLE_* / DEPLOY_* to true|false.
 normalize_bool() {
   case "${1:-}" in
@@ -544,9 +1196,10 @@ normalize_bool() {
   esac
 }
 
-export SERVICE_NAME STAGE AWS_REGION
+export SERVICE_NAME APPLICATION_SERVICE_NAME STAGE AWS_REGION
 export APP_STACK_NAME STACK_NAME="${STACK_NAME:-$APP_STACK_NAME}"
 export DATA_STACK_NAME INFRA_STACK_NAME DATA_TABLE_NAME DATA_LOGICAL_ID
 export SSM_PREFIX LAST_DEPLOYED_COMMIT_PARAM
-export OWNERSHIP_TAG_SERVICE OWNERSHIP_TAG_PURPOSE OWNERSHIP_TAG_MANAGED_BY
+export OWNERSHIP_TAG_SERVICE OWNERSHIP_TAG_STAGE OWNERSHIP_TAG_PURPOSE OWNERSHIP_TAG_MANAGED_BY
+export RESOURCE_NAME_PREFIX
 export SERVICE_ROOT SERVICE_DIR

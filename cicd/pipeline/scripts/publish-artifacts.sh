@@ -2,11 +2,19 @@
 # Publish immutable, commit-scoped artifacts after package + manifest generation.
 # Layout:
 #   s3://$ARTIFACT_BUCKET/${SERVICE_NAME}/<commit-sha>/{data,infra,app}/packaged.yaml
-#   s3://$ARTIFACT_BUCKET/${SERVICE_NAME}/<commit-sha>/app/*.zip
+#   s3://$ARTIFACT_BUCKET/${SERVICE_NAME}/<commit-sha>/app/<lambda>.zip
 #   s3://$ARTIFACT_BUCKET/${SERVICE_NAME}/<commit-sha>/deployment-manifest.json
 #
+# App publish is atomic:
+#   discover ZIPs from packaged.yaml + Serverless output
+#     → validate local ZIPs
+#     → upload ZIPs
+#     → verify ZIP uploads
+#     → rewrite app/packaged.yaml to those keys
+#     → upload packaged.yaml
+#
 # Only publishes layers that are enabled and selected for deploy (DEPLOY_*=true).
-# Refuses overwrite of existing keys.
+# Refuses overwrite of existing keys unless the object SHA-256 matches.
 
 set -euo pipefail
 
@@ -64,6 +72,8 @@ resolve_local_manifest() {
 }
 
 echo "Publish working directory SERVICE_DIR=$SERVICE_DIR"
+echo "Pipeline identity:     $SERVICE_NAME"
+echo "Application identity:  $APPLICATION_SERVICE_NAME"
 cd "$SERVICE_DIR"
 
 DATA_TEMPLATE="${DATA_PACKAGED_TEMPLATE:-data/packaged.yaml}"
@@ -108,7 +118,8 @@ echo "Artifact bucket: $BUCKET"
 echo "Artifact prefix: $PREFIX"
 echo "Current commit:  $CURRENT_COMMIT"
 echo "Stage:           $STAGE"
-echo "Service:         $SERVICE_NAME"
+echo "Pipeline service: $SERVICE_NAME"
+echo "Application service: $APPLICATION_SERVICE_NAME"
 echo "Deployment manifest: $MANIFEST"
 echo "Publish layers: data=$need_data infra=$need_infra app=$need_app"
 
@@ -127,16 +138,18 @@ let tpl;
 try {
   tpl = JSON.parse(raw);
 } catch (e) {
-  console.log("App template is not JSON; skipping Lambda Code rewrite");
-  process.exit(0);
+  console.error("ERROR: App template is not JSON CloudFormation output; cannot rewrite Lambda Code locations");
+  process.exit(1);
 }
 let rewritten = 0;
-for (const res of Object.values(tpl.Resources || {})) {
+const resources = tpl.Resources || {};
+for (const res of Object.values(resources)) {
   const code = res.Properties && res.Properties.Code;
   if (!code || !code.S3Key) continue;
   const zipName = path.basename(String(code.S3Key).split("@")[0]);
   code.S3Bucket = bucket;
   code.S3Key = `${prefix}/app/${zipName}`;
+  delete code.S3ObjectVersion;
   rewritten += 1;
 }
 
@@ -171,7 +184,68 @@ console.log("Removed ServerlessDeploymentBucket resource/policy/outputs (shared 
 ' "$template"
 }
 
+verify_s3_object() {
+  local key="$1"
+  if ! aws s3api head-object --bucket "$BUCKET" --key "$key" >/dev/null 2>&1; then
+    echo "ERROR: Uploaded object missing: s3://${BUCKET}/${key}"
+    return 1
+  fi
+  echo "Verified s3://${BUCKET}/${key}"
+}
+
+LAMBDA_DISCOVERY=""
 if [ "$need_app" = true ]; then
+  echo "Discovering Lambda ZIP artifacts from ${APP_TEMPLATE} and Serverless package output..."
+  mkdir -p app/.serverless
+  SEARCH_DIRS=".serverless:app/.serverless" \
+    LAMBDA_DISCOVERY="$(discover_lambda_artifacts_json "$APP_TEMPLATE")"
+  printf '%s\n' "$LAMBDA_DISCOVERY" > app/.serverless/lambda-artifacts.json
+
+  ZIP_COUNT="$(DISCOVERY="$LAMBDA_DISCOVERY" node -e 'const d=JSON.parse(process.env.DISCOVERY); process.stdout.write(String((d.artifacts||[]).length))')"
+  if [ "$ZIP_COUNT" = "0" ]; then
+    echo "ERROR: Application template has no discoverable Lambda ZIP artifacts to publish"
+    echo "ERROR: Refusing to upload app/packaged.yaml that would reference missing objects"
+    exit 1
+  fi
+
+  echo "Validating local Lambda ZIP files..."
+  DISCOVERY="$LAMBDA_DISCOVERY" node -e '
+    const fs = require("fs");
+    const data = JSON.parse(process.env.DISCOVERY);
+    let failed = 0;
+    for (const art of data.artifacts || []) {
+      if (!fs.existsSync(art.localPath)) {
+        console.error(`ERROR: Local Lambda artifact not found: ${art.localPath} (${art.logicalId})`);
+        failed = 1;
+      } else {
+        const st = fs.statSync(art.localPath);
+        if (!st.size) {
+          console.error(`ERROR: Local Lambda artifact is empty: ${art.localPath}`);
+          failed = 1;
+        }
+      }
+    }
+    process.exit(failed);
+  '
+
+  echo "Uploading Lambda ZIP artifacts..."
+  while IFS=$'\t' read -r local_path key; do
+    [ -z "$local_path" ] && continue
+    upload_environment_artifact "$local_path" "$key"
+    verify_s3_object "$key"
+  done < <(
+    DISCOVERY="$LAMBDA_DISCOVERY" PREFIX="$PREFIX" node -e '
+      const data = JSON.parse(process.env.DISCOVERY);
+      for (const art of data.artifacts || []) {
+        console.log(`${art.localPath}\t${process.env.PREFIX}/app/${art.zipName}`);
+      }
+    '
+  )
+
+  echo "Lambda artifacts uploaded:"
+  echo "  PASS"
+
+  echo "Rewriting application template to immutable Lambda artifact locations..."
   rewrite_app_lambda_artifact_locations "$APP_TEMPLATE" "$BUCKET" "$PREFIX"
 fi
 
@@ -212,6 +286,7 @@ if [ "$need_app" = true ]; then
 fi
 
 echo "Published immutable artifacts under s3://${BUCKET}/${PREFIX}/"
+echo "Immutable artifact root: ${PREFIX}"
 echo "======================================="
 echo "PUBLISH ENVIRONMENT ARTIFACTS COMPLETED"
 echo "======================================="

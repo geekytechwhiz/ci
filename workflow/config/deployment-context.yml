@@ -1,0 +1,8 @@
+# Deployment-context SSM paths (not service-owned runtime secrets in source control).
+# Values are published by platform/ops; Lambdas resolve them at deploy time.
+dev:
+  carePlanRuntimeBaseUrl: /mvx/dev/care-plan-runtime/base-url
+stg:
+  carePlanRuntimeBaseUrl: /mvx/stg/care-plan-runtime/base-url
+prd:
+  carePlanRuntimeBaseUrl: /mvx/prd/care-plan-runtime/base-url
