@@ -6,7 +6,8 @@
 # Does not deploy CloudFormation, upload artifacts, validate SSM, or run smoke tests.
 # The generic CI/CD pipeline owns deployment after this script succeeds.
 
-set -euo pipefail
+set -Eeuo pipefail
+trap 'echo "ERROR: ${BASH_SOURCE[0]:-build.sh} line=${LINENO} command=${BASH_COMMAND} status=$?" >&2' ERR
 
 echo "======================================="
 echo "[BUILD] STARTED (service packaging)"
@@ -171,7 +172,7 @@ validate_packaged_template() {
       console.error(`ERROR: ${file} Outputs reference ServerlessDeploymentBucket (unresolved)`);
       process.exit(1);
     }
-  ' "$path"
+  ' "$path" "$label"
 }
 
 install_workflow_npm_deps() {
@@ -457,16 +458,10 @@ if [ ! -f "$DISCOVER_JS" ]; then
   exit 1
 fi
 
-echo "Extracting Lambda S3 keys from the packaged application template..."
-node <<'NODE' | tee app/.serverless/s3keys.txt > .serverless/s3keys.txt
-const fs = require('fs');
-const raw = fs.readFileSync('.serverless/' + (
-  fs.existsSync('.serverless/cloudformation-template-update-stack.json')
-    ? 'cloudformation-template-update-stack.json'
-    : 'cloudformation-template-create-stack.json'
-), 'utf8');
-const tpl = JSON.parse(raw);
-const keys = new Set();
+echo "Discovering Lambda ZIP artifacts from the packaged application template..."
+SEARCH_DIRS=".serverless:app/.serverless" \
+  node "$DISCOVER_JS" app/packaged.yaml --require-zips \
+  > app/.serverless/lambda-artifacts.json
 
 DISCOVERY="$(cat app/.serverless/lambda-artifacts.json)"
 DISCOVERY="$DISCOVERY" DEST_DIR="app/.serverless" node -e '

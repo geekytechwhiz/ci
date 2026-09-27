@@ -42,16 +42,16 @@ if [ "$need_data" = false ] && [ "$need_infra" = false ] && [ "$need_app" = fals
   [ "$ENABLE_APP" = "true" ] && [ -f "$TEMPLATE" ] && need_app=true
 fi
 
-if [ "$need_app" = true ] && [ ! -f "$TEMPLATE" ]; then
-  echo "ERROR: app/packaged.yaml not found (application artifact)"
-  exit 1
-fi
 if [ "$need_data" = true ] && [ ! -f "$DATA_TEMPLATE" ]; then
   echo "ERROR: data/packaged.yaml not found (data artifact)" >&2
   exit 1
 fi
 if [ "$need_infra" = true ] && [ ! -f "$INFRA_TEMPLATE" ]; then
-  echo "ERROR: infra/packaged.yaml not found (infrastructure artifact)"
+  echo "ERROR: infra/packaged.yaml not found (infrastructure artifact)" >&2
+  exit 1
+fi
+if [ "$need_app" = true ] && [ ! -f "$TEMPLATE" ]; then
+  echo "ERROR: app/packaged.yaml not found (application artifact)" >&2
   exit 1
 fi
 

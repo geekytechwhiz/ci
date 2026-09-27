@@ -1996,7 +1996,8 @@ Resources:
             build:
               commands:
                 - |
-                  set -euo pipefail
+                  set -Eeuo pipefail
+                  trap 'echo "ERROR: line=${!LINENO} command=${!BASH_COMMAND} status=$?" >&2' ERR
                   echo "========== SOURCE DEBUG =========="
                   echo "CODEBUILD_SOURCE_VERSION=${!CODEBUILD_SOURCE_VERSION:-<EMPTY>}"
                   echo "CODEBUILD_RESOLVED_SOURCE_VERSION=${!CODEBUILD_RESOLVED_SOURCE_VERSION:-<EMPTY>}"
