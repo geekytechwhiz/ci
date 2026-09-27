@@ -23,7 +23,14 @@ provider:
   stackName: ${self:provider.stage}-workflow-service
   versionFunctions: false
 
-   
+  # Packaging-internal only. Do not create ServerlessDeploymentBucket in the app
+  # stack — CodePipeline publishes Lambda zips to the existing shared artifact
+  # bucket (ARTIFACT_BUCKET). The fallback is the already-provisioned bucket
+  # previously used by this service; it is not a new bucket.
+  deploymentBucket:
+    name: ${env:ARTIFACT_BUCKET, '${self:provider.stage}-mibc-workflow-service-bucket'}
+    serverSideEncryption: AES256
+
   memorySize: 512
   timeout: 30
 

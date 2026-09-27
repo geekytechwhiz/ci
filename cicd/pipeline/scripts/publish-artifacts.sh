@@ -67,8 +67,8 @@ echo "Publish working directory SERVICE_DIR=$SERVICE_DIR"
 cd "$SERVICE_DIR"
 
 DATA_TEMPLATE="${DATA_PACKAGED_TEMPLATE:-data/packaged.yaml}"
-INFRA_TEMPLATE="${INFRA_PACKAGED_TEMPLATE:-infrastructure/packaged.yaml}"
-APP_TEMPLATE="${PACKAGED_TEMPLATE:-packaged.yaml}"
+INFRA_TEMPLATE="${INFRA_PACKAGED_TEMPLATE:-infra/packaged.yaml}"
+APP_TEMPLATE="${PACKAGED_TEMPLATE:-app/packaged.yaml}"
 MANIFEST="$(resolve_local_manifest)"
 
 need_data=false
@@ -139,8 +139,35 @@ for (const res of Object.values(tpl.Resources || {})) {
   code.S3Key = `${prefix}/app/${zipName}`;
   rewritten += 1;
 }
+
+// Shared ARTIFACT_BUCKET replaced ServerlessDeploymentBucket. Drop the leftover
+// Serverless-generated bucket, policy, and any Output that still Refs it.
+// Leaving Outputs.ServerlessDeploymentBucketName after removing the resource
+// is exactly: "Unresolved resource dependencies [ServerlessDeploymentBucket]
+// in the Outputs block of the template".
+if (tpl.Resources) {
+  delete tpl.Resources.ServerlessDeploymentBucket;
+  delete tpl.Resources.ServerlessDeploymentBucketPolicy;
+}
+if (tpl.Outputs) {
+  for (const [key, out] of Object.entries(tpl.Outputs)) {
+    if (key === "ServerlessDeploymentBucketName" ||
+        JSON.stringify(out).includes("ServerlessDeploymentBucket")) {
+      delete tpl.Outputs[key];
+    }
+  }
+  if (Object.keys(tpl.Outputs).length === 0) delete tpl.Outputs;
+}
+
+const leftover = JSON.stringify(tpl).includes("ServerlessDeploymentBucket");
+if (leftover) {
+  console.error("ERROR: ServerlessDeploymentBucket still referenced after artifact rewrite");
+  process.exit(1);
+}
+
 fs.writeFileSync(file, JSON.stringify(tpl, null, 2) + "\n");
 console.log(`Rewrote ${rewritten} Lambda Code location(s) to s3://${bucket}/${prefix}/app/`);
+console.log("Removed ServerlessDeploymentBucket resource/policy/outputs (shared artifact bucket owns packages)");
 ' "$template"
 }
 
@@ -155,19 +182,32 @@ fi
 upload_environment_artifact "$MANIFEST" "${PREFIX}/deployment-manifest.json"
 
 if [ "$need_app" = true ]; then
-  if [ -f .serverless/s3keys.txt ]; then
+  S3KEYS_FILE=""
+  for candidate in .serverless/s3keys.txt app/.serverless/s3keys.txt; do
+    if [ -f "$candidate" ]; then
+      S3KEYS_FILE="$candidate"
+      break
+    fi
+  done
+  if [ -n "$S3KEYS_FILE" ]; then
     while read -r key; do
       [ -z "$key" ] && continue
       zip_name="$(basename "${key%%@*}")"
-      local_path=".serverless/$zip_name"
-      if [ ! -f "$local_path" ]; then
-        echo "ERROR: Local Lambda artifact not found: $local_path (key: $key)"
+      local_path=""
+      for zip_dir in .serverless app/.serverless; do
+        if [ -f "$zip_dir/$zip_name" ]; then
+          local_path="$zip_dir/$zip_name"
+          break
+        fi
+      done
+      if [ -z "$local_path" ]; then
+        echo "ERROR: Local Lambda artifact not found: $zip_name (key: $key)"
         exit 1
       fi
       upload_environment_artifact "$local_path" "${PREFIX}/app/${zip_name}"
-    done < .serverless/s3keys.txt
+    done < "$S3KEYS_FILE"
   else
-    echo "WARN: .serverless/s3keys.txt not found — app zip copies not published"
+    echo "WARN: s3keys.txt not found under .serverless/ or app/.serverless/ — app zip copies not published"
   fi
 fi
 

@@ -25,9 +25,9 @@ ENABLE_APP="$(normalize_bool "${ENABLE_APP:-true}")"
 
 cd "$SERVICE_DIR"
 
-TEMPLATE="${PACKAGED_TEMPLATE:-packaged.yaml}"
+TEMPLATE="${PACKAGED_TEMPLATE:-app/packaged.yaml}"
 DATA_TEMPLATE="${DATA_PACKAGED_TEMPLATE:-data/packaged.yaml}"
-INFRA_TEMPLATE="${INFRA_PACKAGED_TEMPLATE:-infrastructure/packaged.yaml}"
+INFRA_TEMPLATE="${INFRA_PACKAGED_TEMPLATE:-infra/packaged.yaml}"
 
 need_data=false
 need_infra=false
@@ -43,7 +43,7 @@ if [ "$need_data" = false ] && [ "$need_infra" = false ] && [ "$need_app" = fals
 fi
 
 if [ "$need_app" = true ] && [ ! -f "$TEMPLATE" ]; then
-  echo "ERROR: packaged.yaml not found (application artifact)"
+  echo "ERROR: app/packaged.yaml not found (application artifact)"
   exit 1
 fi
 if [ "$need_data" = true ] && [ ! -f "$DATA_TEMPLATE" ]; then
@@ -51,7 +51,7 @@ if [ "$need_data" = true ] && [ ! -f "$DATA_TEMPLATE" ]; then
   exit 1
 fi
 if [ "$need_infra" = true ] && [ ! -f "$INFRA_TEMPLATE" ]; then
-  echo "ERROR: infrastructure/packaged.yaml not found (infrastructure artifact)"
+  echo "ERROR: infra/packaged.yaml not found (infrastructure artifact)"
   exit 1
 fi
 

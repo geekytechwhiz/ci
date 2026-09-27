@@ -43,12 +43,12 @@ case "$LAYER" in
     ;;
   infra)
     STACK="${INFRA_STACK_NAME}"
-    TEMPLATE="${INFRA_PACKAGED_TEMPLATE:-infrastructure/packaged.yaml}"
+    TEMPLATE="${INFRA_PACKAGED_TEMPLATE:-infra/packaged.yaml}"
     TAG_STACK=infrastructure
     ;;
   app)
     STACK="${APP_STACK_NAME}"
-    TEMPLATE="${PACKAGED_TEMPLATE:-packaged.yaml}"
+    TEMPLATE="${PACKAGED_TEMPLATE:-app/packaged.yaml}"
     TAG_STACK=application
     ;;
 esac

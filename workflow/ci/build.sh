@@ -41,6 +41,10 @@ validate_prerequisites() {
   mkdir -p app
 }
 
+# ServerlessDeploymentBucketName is Serverless bookkeeping. This POC is SSM-only
+# (no CloudFormation exports). The generic pipeline publishes artifacts to
+# ARTIFACT_BUCKET, so a Ref to ServerlessDeploymentBucket in Outputs is obsolete
+# and will fail changeset creation if the resource is not in the same template.
 strip_cfn_outputs() {
   local path="$1"
   node -e '
@@ -98,6 +102,16 @@ validate_packaged_template() {
     }
     if (Object.keys(tpl.Resources).length === 0) {
       console.error(`ERROR: ${file} has no CloudFormation resources`);
+      process.exit(1);
+    }
+    const serialized = JSON.stringify(tpl);
+    const hasResource = !!(tpl.Resources && tpl.Resources.ServerlessDeploymentBucket);
+    if (!hasResource && serialized.includes("ServerlessDeploymentBucket")) {
+      console.error(`ERROR: ${file} references ServerlessDeploymentBucket but has no such Resource`);
+      process.exit(1);
+    }
+    if (tpl.Outputs && JSON.stringify(tpl.Outputs).includes("ServerlessDeploymentBucket") && !hasResource) {
+      console.error(`ERROR: ${file} Outputs reference ServerlessDeploymentBucket (unresolved)`);
       process.exit(1);
     }
   ' "$path"
@@ -238,7 +252,7 @@ if compgen -G ".serverless/*.zip" > /dev/null; then
 fi
 
 echo "Extracting Lambda S3 keys from the packaged application template..."
-node <<'NODE' > app/.serverless/s3keys.txt
+node <<'NODE' | tee app/.serverless/s3keys.txt > .serverless/s3keys.txt
 const fs = require('fs');
 const raw = fs.readFileSync('.serverless/' + (
   fs.existsSync('.serverless/cloudformation-template-update-stack.json')
