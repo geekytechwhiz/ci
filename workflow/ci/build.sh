@@ -97,6 +97,12 @@ echo "APP_STACK_NAME=$APP_STACK_NAME"
 # (no CloudFormation exports). The generic pipeline publishes artifacts to
 # ARTIFACT_BUCKET, so a Ref to ServerlessDeploymentBucket in Outputs is obsolete
 # and will fail changeset creation if the resource is not in the same template.
+#
+# When provider.deploymentBucket.name is set, Serverless 3.x omits
+# Resources.ServerlessDeploymentBucket but still emits
+# Outputs.ServerlessDeploymentBucketName: { Value: { Ref: ServerlessDeploymentBucket } }.
+# That is the CloudFormation error:
+#   Unresolved resource dependencies [ServerlessDeploymentBucket] in the Outputs block
 strip_cfn_outputs() {
   local path="$1"
   node -e '
@@ -104,6 +110,26 @@ strip_cfn_outputs() {
     const p = process.argv[1];
     const tpl = JSON.parse(fs.readFileSync(p, "utf8"));
     delete tpl.Outputs;
+    fs.writeFileSync(p, JSON.stringify(tpl, null, 2) + "\n");
+  ' "$path"
+}
+
+# Keep ServiceEndpoint / API URL. Drop only the obsolete Serverless bucket output.
+strip_serverless_deployment_bucket_outputs() {
+  local path="$1"
+  node -e '
+    const fs = require("fs");
+    const p = process.argv[1];
+    const tpl = JSON.parse(fs.readFileSync(p, "utf8"));
+    if (tpl.Outputs) {
+      for (const [key, out] of Object.entries(tpl.Outputs)) {
+        if (key === "ServerlessDeploymentBucketName" ||
+            JSON.stringify(out).includes("ServerlessDeploymentBucket")) {
+          delete tpl.Outputs[key];
+        }
+      }
+      if (Object.keys(tpl.Outputs).length === 0) delete tpl.Outputs;
+    }
     fs.writeFileSync(p, JSON.stringify(tpl, null, 2) + "\n");
   ' "$path"
 }
@@ -129,6 +155,8 @@ copy_packaged_template() {
     strip_cfn_outputs "$dest"
   else
     echo "Keeping CloudFormation Outputs on ${dest} (ServiceEndpoint / API URL)"
+    strip_serverless_deployment_bucket_outputs "$dest"
+    echo "Removed obsolete ServerlessDeploymentBucket Outputs from ${dest}"
   fi
   echo "Packaged template: $dest"
 }
