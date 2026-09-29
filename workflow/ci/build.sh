@@ -292,9 +292,6 @@ publish_pipeline_contract() {
     "$contract_abs/app/packaged.yaml"
 }
 
-###############################################################################
-# Clean previous generated artifacts
-###############################################################################
 
 echo "[BUILD] Cleaning generated packaging output"
 rm -rf .serverless

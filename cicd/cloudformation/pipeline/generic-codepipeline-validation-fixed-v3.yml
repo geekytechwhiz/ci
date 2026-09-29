@@ -656,7 +656,9 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
                   - !If
                     - HasSsmPrefix
-                    - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/*'
+                    - !Sub
+                      - 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${Prefix}/*'
+                      - Prefix: !Ref SsmPrefix
                     - !Ref AWS::NoValue
                   - !If
                     - HasResolvedResourceNamePrefix
@@ -673,6 +675,12 @@ Resources:
                               - RegionShort: !FindInMap [RegionShortCodeMap, !Ref 'AWS::Region', Code]
                     - !Ref AWS::NoValue
               - Sid: SharedSsmReads
+                # Read-only resolution for {{resolve:ssm:}} dynamic refs that are
+                # outside the service contract (SsmPrefix). Covers cross-service
+                # paths such as /mvx/{Stage}/care-plan-runtime/* and /mvx/{Stage}/shared/*.
+                # SsmPrefix stays the service-owned contract (example
+                # /nvdev-use1-mvx/cloud-formation-testing) and must not be rewritten
+                # to a dependency namespace. Write access remains on SsmContract only.
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
@@ -682,8 +690,11 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Stage}/${ServiceName}/*'
                   - !If
                     - HasSsmPrefix
-                    - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/*'
+                    - !Sub
+                      - 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${Prefix}/*'
+                      - Prefix: !Ref SsmPrefix
                     - !Ref AWS::NoValue
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectCode}/${Stage}/*'
                   - !If
                     - HasResolvedResourceNamePrefix
                     - !Sub
