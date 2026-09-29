@@ -1,0 +1,42 @@
+service:
+  name: cloud-formation-testing
+  root: workflow
+
+prefix: /mvx/dev/care-plan-runtime
+
+source:
+  repository: geekytechwhiz/ci
+  branch: dev-v1
+  connectionArn: "arn:aws:codeconnections:us-east-1:462778607085:connection/271c183a-9f2b-4625-af12-86cebfe37a16"
+  ciPath: workflow/ci
+
+deployment:
+  data: true
+  infrastructure: true
+  application: true
+
+data:
+  enabled: true
+  type: dynamodb
+  logicalId: ""
+
+features:
+  dynamodb: true
+  sqs: true
+  lambda: true
+  apiGateway: true
+
+ssm:
+  required:
+    - TABLE_NAME
+    - TABLE_ARN
+    - STREAM_ARN
+    - SQS_QUEUE_URL
+    - SQS_QUEUE_ARN
+    - EVENT_BUS_NAME
+    - EVENT_BUS_ARN
+
+application:
+  healthCheckPath: /health
+  healthResponseContains: '"status": "healthy"'
+  buildProjectName: ""
